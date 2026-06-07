@@ -36,8 +36,6 @@ SQUAT_DOWN_TRIGGER  = max(SQUAT_DOWN_KNEE_ANGLE, 125)
 SQUAT_UP_TRIGGER    = min(SQUAT_UP_KNEE_ANGLE, 155)
 PUSHUP_DOWN_TRIGGER = max(PUSHUP_DOWN_ELBOW_ANGLE, 115)
 PUSHUP_UP_TRIGGER   = min(PUSHUP_UP_ELBOW_ANGLE, 145)
-SITUP_DOWN_HIP_ANGLE = 70    # torso curled
-SITUP_UP_HIP_ANGLE   = 120   # flat on back
 
 REP_COOLDOWN_SECONDS = 0.35
 
@@ -107,20 +105,44 @@ def analyze_squat(landmarks, state):
 
 
 # ── Push-up ───────────────────────────────────────────────────────────────────
+# Requires body to be HORIZONTAL (prone position) before counting reps.
+# Prone check: shoulder Y and ankle Y must be within 0.35 vertically,
+# and body angle must be > 140°. This blocks counting when standing/sitting.
+
+PUSHUP_MIN_BODY_ANGLE = 140
+PUSHUP_PRONE_Y_DIFF   = 0.35
+
 def analyze_pushup(landmarks, state):
     elbow_angles, body_angles = [], []
+    shoulder_ys, ankle_ys     = [], []
 
     for side in ["left", "right"]:
         if required_side_visible(landmarks, side, ["shoulder", "elbow", "wrist", "hip", "ankle"]):
             p = get_side_points(landmarks, side)
             elbow_angles.append(calculate_angle(p["shoulder"], p["elbow"], p["wrist"]))
             body_angles.append(calculate_angle(p["shoulder"], p["hip"], p["ankle"]))
+            shoulder_ys.append(p["shoulder"][1])
+            ankle_ys.append(p["ankle"][1])
 
     elbow_angle = _avg(elbow_angles)
     body_angle  = _avg(body_angles)
+    shoulder_y  = _avg(shoulder_ys)
+    ankle_y     = _avg(ankle_ys)
 
     if elbow_angle is None:
-        return set_no_landmarks_feedback(state, "Side view. Keep shoulder, elbow, wrist, hip and ankle visible.")
+        return set_no_landmarks_feedback(
+            state, "Side view. Keep shoulder, elbow, wrist, hip and ankle visible."
+        )
+
+    # Gate: must be in prone (flat) position
+    y_diff   = abs((ankle_y or 1.0) - (shoulder_y or 0.0))
+    is_prone = y_diff < PUSHUP_PRONE_Y_DIFF and (body_angle is None or body_angle > PUSHUP_MIN_BODY_ANGLE)
+
+    if not is_prone:
+        state.position   = "UNKNOWN"
+        state.feedback   = "Get into push-up position — lie flat, face down."
+        state.form_score = 0
+        return {"Elbow angle": elbow_angle, "Body angle": body_angle}, state
 
     if elbow_angle <= PUSHUP_DOWN_TRIGGER:
         state.position = "DOWN"
@@ -133,10 +155,10 @@ def analyze_pushup(landmarks, state):
     elif state.position == "UP":    feedback.append("Arms extended. Lower with control.")
     elif state.position == "DOWN":  feedback.append("Good depth. Push back up.")
     if body_angle is not None and body_angle < 150:
-        feedback.append("Keep body straight."); score -= 25
+        feedback.append("Keep body straight — don't let hips sag."); score -= 25
     if state.position != "DOWN" and elbow_angle > PUSHUP_DOWN_TRIGGER:
-        feedback.append("Lower chest more."); score -= 10
-    if not feedback: feedback.append("Move with control.")
+        feedback.append("Lower your chest more."); score -= 10
+    if not feedback: feedback.append("Good form. Keep going.")
 
     state.feedback   = " ".join(feedback)
     state.form_score = max(0, min(100, score))
@@ -144,36 +166,74 @@ def analyze_pushup(landmarks, state):
 
 
 # ── Sit-up ────────────────────────────────────────────────────────────────────
-# Lying flat (hip angle > 120) → torso curled (hip angle < 70) → back to flat = 1 rep
+# Gates:
+#   1. Knees bent (knee angle < 130) — blocks standing/sitting on chair
+#   2. Lying flat: |shoulder.y - hip.y| < 0.20 — blocks sitting upright on floor
+# Torso angle = shoulder→hip→knee
+#   DOWN (flat):   90° – 140°  (horizontal body, knees bent up)
+#   UP   (curled): < 55°       (shoulder close to knee)
+
+SITUP_DOWN_MIN    = 90
+SITUP_DOWN_MAX    = 140
+SITUP_UP_MAX      = 55
+SITUP_KNEE_MAX    = 130
+SITUP_PRONE_YDIFF = 0.20
+
 def analyze_situp(landmarks, state):
-    hip_angles = []
+    torso_angles, knee_angles = [], []
+    shoulder_ys, hip_ys       = [], []
 
     for side in ["left", "right"]:
         if required_side_visible(landmarks, side, ["shoulder", "hip", "knee"]):
             p = get_side_points(landmarks, side)
-            hip_angles.append(calculate_angle(p["shoulder"], p["hip"], p["knee"]))
+            torso_angles.append(calculate_angle(p["shoulder"], p["hip"], p["knee"]))
+            shoulder_ys.append(p["shoulder"][1])
+            hip_ys.append(p["hip"][1])
+        if required_side_visible(landmarks, side, ["hip", "knee", "ankle"]):
+            p = get_side_points(landmarks, side)
+            knee_angles.append(calculate_angle(p["hip"], p["knee"], p["ankle"]))
 
-    hip_angle = _avg(hip_angles)
+    torso_angle = _avg(torso_angles)
+    knee_angle  = _avg(knee_angles)
+    shoulder_y  = _avg(shoulder_ys)
+    hip_y       = _avg(hip_ys)
 
-    if hip_angle is None:
-        return set_no_landmarks_feedback(state, "Lie sideways so shoulder, hip and knee are visible.")
+    if torso_angle is None:
+        return set_no_landmarks_feedback(
+            state, "Lie flat on back, sideways to camera. Shoulder, hip and knee must be visible."
+        )
 
-    # DOWN = flat on back, UP = curled
-    if hip_angle > SITUP_UP_HIP_ANGLE:
+    # Gate 1: knees bent
+    if knee_angle is not None and knee_angle > SITUP_KNEE_MAX:
+        state.position   = "UNKNOWN"
+        state.feedback   = "Bend your knees (feet flat on floor) and lie on your back."
+        state.form_score = 0
+        return {"Torso angle": torso_angle, "Knee angle": knee_angle}, state
+
+    # Gate 2: lying flat
+    if shoulder_y is not None and hip_y is not None:
+        y_diff = abs(shoulder_y - hip_y)
+        if y_diff > SITUP_PRONE_YDIFF:
+            state.position   = "UNKNOWN"
+            state.feedback   = "Lie flat on your back — sit-ups require you to be on the floor."
+            state.form_score = 0
+            return {"Torso angle": torso_angle, "Knee angle": knee_angle}, state
+
+    if SITUP_DOWN_MIN <= torso_angle <= SITUP_DOWN_MAX:
         if state.position == "UP":
             _count_rep_once(state)
         state.position = "DOWN"
-    elif hip_angle < SITUP_DOWN_HIP_ANGLE:
+    elif torso_angle < SITUP_UP_MAX:
         state.position = "UP"
 
     feedback, score = [], 100
-    if state.position == "UNKNOWN": feedback.append("Lie flat, then curl up.")
-    elif state.position == "DOWN":  feedback.append("Flat. Now crunch up.")
-    elif state.position == "UP":    feedback.append("Good crunch! Lower back down.")
+    if state.position == "UNKNOWN": feedback.append("Lie flat, knees bent — then curl up.")
+    elif state.position == "DOWN":  feedback.append("Flat. Now curl your torso up to your knees.")
+    elif state.position == "UP":    feedback.append("Good crunch! Lower back down slowly.")
 
     state.feedback   = " ".join(feedback)
     state.form_score = max(0, min(100, score))
-    return {"Hip angle": hip_angle}, state
+    return {"Torso angle": torso_angle, "Knee angle": knee_angle}, state
 
 
 # ── Jumping Jack ──────────────────────────────────────────────────────────────

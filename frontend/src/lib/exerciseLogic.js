@@ -50,8 +50,6 @@ const JACK_CLOSED_FOOT_MULT   = 1.00;
 const PLANK_GOOD_BODY_ANGLE   = 160;
 const LUNGE_DOWN_KNEE_ANGLE   = 115;
 const LUNGE_UP_KNEE_ANGLE     = 155;
-const SITUP_DOWN_HIP_ANGLE    = 70;   // torso curled (up position for sit-up)
-const SITUP_UP_HIP_ANGLE      = 120;  // torso flat (down/start position)
 
 // More forgiving thresholds
 const SQUAT_DOWN_TRIGGER  = Math.max(SQUAT_DOWN_KNEE_ANGLE, 125);
@@ -308,54 +306,90 @@ function analyzePushup(landmarks, state, nowMs) {
 }
 
 // ─── SIT-UP ───────────────────────────────────────────────────────────────────
-// Lying flat → torso upright is ONE rep.
-// Detect via shoulder–hip–knee angle (hip flexion).
-// DOWN = flat on back (hip angle > SITUP_UP_HIP_ANGLE)
-// UP   = torso curled (hip angle < SITUP_DOWN_HIP_ANGLE)
+// Detection strategy:
+//
+// GATE — person must be LYING DOWN (not sitting/standing):
+//   • Knees must be bent: knee angle (hip→knee→ankle) < 130°
+//   • Shoulders must be at similar height to hips: |shoulder.y - hip.y| < 0.20
+//     (in MediaPipe, y=0 is top, y=1 is bottom; lying flat → shoulder≈hip height)
+//     When sitting/standing, shoulder is much higher (smaller y) than hip → big diff
+//
+// REP CYCLE (torso angle = shoulder→hip→knee):
+//   DOWN = flat on back:   torso angle 90°–130° (body near horizontal, knees bent up)
+//   UP   = curled up:      torso angle < 55°    (shoulder close to knee)
+//   Rep counted on DOWN→UP→DOWN cycle (counted when returning to DOWN)
+
+const SITUP_DOWN_MIN   = 90;   // min torso angle for "flat" position
+const SITUP_DOWN_MAX   = 140;  // max torso angle for "flat" position
+const SITUP_UP_MAX     = 55;   // max torso angle for "curled" position
+const SITUP_KNEE_MAX   = 130;  // knee must be more bent than this
+const SITUP_PRONE_YDIFF = 0.20; // max |shoulder.y - hip.y| when lying flat
 
 function analyzeSitup(landmarks, state, nowMs) {
-  const hipAngles = [];
+  const torsoAngles = [], kneeAngles = [];
+  const shoulderYs  = [], hipYs     = [];
 
   for (const side of ["left", "right"]) {
     if (sideVisible(landmarks, side, ["shoulder", "hip", "knee"])) {
       const p = getSidePoints(landmarks, side);
-      hipAngles.push(calculateAngle(p.shoulder, p.hip, p.knee));
+      torsoAngles.push(calculateAngle(p.shoulder, p.hip, p.knee));
+      shoulderYs.push(p.shoulder[1]);
+      hipYs.push(p.hip[1]);
+    }
+    if (sideVisible(landmarks, side, ["hip", "knee", "ankle"])) {
+      const p = getSidePoints(landmarks, side);
+      kneeAngles.push(calculateAngle(p.hip, p.knee, p.ankle));
     }
   }
 
-  const hipAngle = avg(hipAngles);
+  const torsoAngle = avg(torsoAngles);
+  const kneeAngle  = avg(kneeAngles);
+  const shoulderY  = avg(shoulderYs);
+  const hipY       = avg(hipYs);
 
-  if (hipAngle == null) {
-    return noLandmarks(state, "Lie down sideways so shoulder, hip and knee are visible.");
+  if (torsoAngle == null) {
+    return noLandmarks(state, "Lie flat on back, sideways to camera. Shoulder, hip and knee must be visible.");
   }
 
-  // State machine: DOWN (flat) → UP (curled) = 1 rep
-  if (hipAngle > SITUP_UP_HIP_ANGLE) {
+  // ── Gate 1: knees must be bent ─────────────────────────────────────────────
+  if (kneeAngle != null && kneeAngle > SITUP_KNEE_MAX) {
+    state.position  = "UNKNOWN";
+    state.feedback  = "Bend your knees (feet flat on floor) and lie on your back.";
+    state.formScore = 0;
+    return { metrics: { "Torso angle": torsoAngle, "Knee angle": kneeAngle }, state };
+  }
+
+  // ── Gate 2: must be lying flat (shoulder ≈ hip height) ────────────────────
+  const yDiff = shoulderY != null && hipY != null ? Math.abs(shoulderY - hipY) : null;
+  if (yDiff != null && yDiff > SITUP_PRONE_YDIFF) {
+    state.position  = "UNKNOWN";
+    state.feedback  = "Lie flat on your back — sit-ups require you to be on the floor.";
+    state.formScore = 0;
+    return { metrics: { "Torso angle": torsoAngle, "Knee angle": kneeAngle }, state };
+  }
+
+  // ── State machine ─────────────────────────────────────────────────────────
+  if (torsoAngle >= SITUP_DOWN_MIN && torsoAngle <= SITUP_DOWN_MAX) {
     if (state.position === "UP") {
-      // completed the rep when returning to DOWN
-      countRep(state, nowMs);
+      countRep(state, nowMs); // rep complete: returned to flat after a full curl
     }
     state.position = "DOWN";
-  } else if (hipAngle < SITUP_DOWN_HIP_ANGLE) {
+  } else if (torsoAngle < SITUP_UP_MAX) {
     state.position = "UP";
   }
+  // angles between 55–90 are mid-movement — keep current label
 
   let score = 100;
   const feedbacks = [];
 
-  if (state.position === "UNKNOWN") feedbacks.push("Lie flat, then curl up.");
-  else if (state.position === "DOWN") feedbacks.push("Flat. Now crunch up.");
-  else if (state.position === "UP")   feedbacks.push("Good crunch! Lower back down.");
-
-  if (hipAngle > SITUP_UP_HIP_ANGLE + 10 && state.position === "DOWN") {
-    feedbacks.push("Fully extend back down.");
-    score -= 10;
-  }
+  if (state.position === "UNKNOWN") feedbacks.push("Lie flat, knees bent — then curl up.");
+  else if (state.position === "DOWN") feedbacks.push("Flat. Now curl your torso up to your knees.");
+  else if (state.position === "UP")   feedbacks.push("Good crunch! Lower back down slowly.");
 
   state.feedback  = feedbacks.join(" ");
   state.formScore = Math.max(0, Math.min(100, score));
 
-  return { metrics: { "Hip angle": hipAngle }, state };
+  return { metrics: { "Torso angle": torsoAngle, "Knee angle": kneeAngle }, state };
 }
 
 // ─── JUMPING JACK ─────────────────────────────────────────────────────────────
