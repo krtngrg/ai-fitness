@@ -949,3 +949,312 @@ FILES CHANGED SUMMARY
 ================================================================================
 END OF UPDATE LOG
 ================================================================================
+
+================================================================================
+  UPDATE LOG — New Exercises, Skeleton Fix, Exercise Flow Fix, Plank Overhaul
+  Date: June 7, 2026
+  Files Modified: 7
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+BUG FIX 1: Skeleton tracking was offset from user's body
+────────────────────────────────────────────────────────────────────────────────
+
+ROOT CAUSE:
+  The video was drawn mirrored using ctx.scale(-1, 1) + ctx.drawImage, then
+  ctx.restore(). After restore the canvas was back to normal coordinates.
+  drawSkeleton() drew landmarks at (lm.x * w, lm.y * h) — un-mirrored coords.
+  MediaPipe gives lm.x in raw camera space (0=left camera edge, 1=right camera edge).
+  The video was flipped but the skeleton dots were not → skeleton appeared offset.
+
+FIX (frontend/src/hooks/useWebcamPose.js — drawSkeleton):
+  Changed all landmark x coordinates from:
+    lm.x * w
+  to:
+    (1 - lm.x) * w
+  This mirrors the x coordinate to match the mirrored video frame.
+
+────────────────────────────────────────────────────────────────────────────────
+BUG FIX 2: "Do Another Exercise" ended the session instead of returning to list
+────────────────────────────────────────────────────────────────────────────────
+
+ROOT CAUSE:
+  WorkoutResults.jsx tried to navigate to /exercise-selection with
+  state?.exerciseSelectionState but LiveWorkout.jsx never set that in
+  navigation state. So exercises was always undefined on return → empty list.
+
+FIX (3 files coordinated):
+
+  ExerciseSelection.jsx:
+    - Now receives completed_ids (Set of done roadmap_day_exercise_ids) in state
+    - Passes exerciseSelectionState: { session_id, exercises, completed_ids }
+      to LiveWorkout when starting any exercise
+    - Shows completed exercises greyed out with a ✓ Done badge
+    - Shows remaining count in subtitle
+    - Shows "All exercises complete!" when all done
+
+  LiveWorkout.jsx (handleFinish + handleStopEarly):
+    - Reads state.exerciseSelectionState from navigation state
+    - After saving, adds the current roadmap_day_exercise_id to completed_ids
+    - Passes updated exerciseSelectionState to WorkoutResults navigation
+
+  WorkoutResults.jsx:
+    - Reads exerciseSelectionState from navigation state
+    - Calculates remainingCount from exercises minus completed_ids
+    - If hasMore → shows "Continue — Next Exercise" button → back to ExerciseSelection
+    - If all done → shows "Back to Dashboard"
+    - Shows "Up next" preview card with remaining exercises
+
+────────────────────────────────────────────────────────────────────────────────
+FEATURE: New exercises added — Sit-up, Burpee, Mountain Climber
+────────────────────────────────────────────────────────────────────────────────
+
+FILES CHANGED:
+  frontend/src/lib/exerciseLogic.js
+  ai_model/exercise_logic.py
+  ai_model/workout_runner.py (SLUG_TO_EXERCISE map updated)
+  backend/fitness/management/commands/seed_exercises.py
+
+EXERCISES ADDED:
+
+  Sit-up (sit_up):
+    Detection: shoulder→hip→knee torso angle + two gates
+    Gate 1: knee angle must be < 130° (feet flat, knees bent)
+            blocks standing / sitting on chair
+    Gate 2: |shoulder.y - hip.y| < 0.20 (must be lying flat)
+            blocks sitting upright on floor
+    DOWN = torso angle 90-140° (flat on back)
+    UP   = torso angle < 55° (fully curled)
+    Rep counted: UP → DOWN transition
+
+  Burpee (burpee):
+    Detection: knee angle + wrist position
+    DOWN = knee angle ≤ 115° (floor/squat position)
+    UP   = wrists above shoulders + knee angle > 140° (standing/jump)
+    Rep counted: DOWN → UP transition
+
+  Mountain Climber (mountain_climber):
+    Detection: hip flexion angle per side (shoulder→hip→knee)
+    Left drive  = left hip angle < 80°
+    Right drive = right hip angle < 80°
+    Half-reps counted alternately; every 2 half-reps = 1 full rep
+
+SLUG → NAME MAPPINGS ADDED:
+  sit_up / situp        → "Sit-up"
+  burpee / burpees      → "Burpee"
+  mountain_climber      → "Mountain Climber"
+
+DB CHANGE:
+  seed_exercises.py updated: sit_up, burpee, mountain_climber now have
+  has_ai_detection=True. Run `python manage.py seed_exercises` to update.
+
+────────────────────────────────────────────────────────────────────────────────
+FEATURE: Plank completely overhauled — countdown + alarm
+────────────────────────────────────────────────────────────────────────────────
+
+FILES CHANGED:
+  frontend/src/lib/exerciseLogic.js (analyzePlank)
+  frontend/src/hooks/useWebcamPose.js (render loop + new draw functions)
+
+OLD BEHAVIOUR:
+  - Plank timer started immediately when body angle ≥ 160°
+  - No countdown, no alarm on form break
+
+NEW BEHAVIOUR:
+
+  Phase 1 — Countdown (3 seconds):
+    User gets into plank position → body angle ≥ 160°
+    Big countdown number fills canvas: 3… 2… 1…
+    Position badge shows "READY 3…"
+    If user breaks form during countdown, countdown resets
+
+  Phase 2 — Hold timer:
+    After 3s countdown completes, plankStartTime is set
+    plankSeconds counts up from 0
+    Position badge shows "HOLD"
+    Feedback: "Perfect plank! Keep holding."
+
+  Form break alarm:
+    If body angle drops below 160° after countdown was done:
+      → Red translucent overlay: "⚠ Fix your form!"
+      → Two-tone beep plays via Web Audio API (no external audio file)
+      → Alarm repeats every 2000ms while form stays broken
+      → Countdown resets — user must hold 3s again to restart timer
+
+  State fields added to createState():
+    plankCountdownStartTime  — when user first got into position
+    plankCountdownDone       — whether 3s countdown has completed
+    plankFormBad             — true when form broke during hold
+    plankLastAlarmMs         — timestamp of last alarm beep
+    plankCountdown           — current countdown number (3/2/1)
+
+  New canvas draw functions added to useWebcamPose.js:
+    drawPlankCountdown(ctx, cw, ch, remaining) — big number overlay
+    drawPlankAlarm(ctx, cw, ch)                — red flash + text overlay
+    playAlarmBeep()                            — Web Audio API two-tone beep
+
+────────────────────────────────────────────────────────────────────────────────
+BUG FIX 3: Sit-up counted when just sitting on ground (false positives)
+────────────────────────────────────────────────────────────────────────────────
+
+ROOT CAUSE:
+  Original sit-up used a single hip angle threshold (shoulder→hip→knee).
+  When sitting cross-legged or upright on the floor, that angle was ~90°
+  which fell right in the counting zone → phantom reps.
+
+FIX:
+  Two gates added BEFORE any angle-based counting:
+
+  Gate 1 — Knee bend:
+    knee angle (hip→knee→ankle) must be < 130°
+    Sitting on a chair with straight legs → knee ~170° → blocked
+    Lying flat with bent knees → knee ~40-80° → passes
+
+  Gate 2 — Lying flat:
+    |shoulder.y - hip.y| must be < 0.20 (MediaPipe normalised coords)
+    When lying flat: shoulders and hips are at same height → small diff
+    When sitting upright: shoulders are much higher than hips → large diff → blocked
+
+  State machine thresholds (calibrated from coordinate geometry):
+    DOWN (flat on back):  torso angle 90° – 140°
+    UP   (curled):        torso angle < 55°
+    Rep counted on:       UP → DOWN transition (returning to flat)
+
+────────────────────────────────────────────────────────────────────────────────
+BUG FIX 4: Push-up counted when standing or bending over (false positives)
+────────────────────────────────────────────────────────────────────────────────
+
+ROOT CAUSE:
+  Elbow angle alone was used. Any arm bend dropped elbow angle below 115°
+  and triggered a rep — even while standing or leaning forward.
+
+FIX — Prone position gate added:
+  Before any rep counting, verifies person is horizontal (face-down):
+
+  Check 1: |ankle.y - shoulder.y| < 0.35
+    When lying flat: ankle and shoulder are at similar frame heights → small diff
+    When standing:   ankle ~0.9, shoulder ~0.3 → diff 0.6 → blocked
+
+  Check 2: body angle (shoulder→hip→ankle) > 140°
+    Body must be straight — blocks hunching over while standing
+
+  If gate fails → position resets to UNKNOWN, feedback says
+  "Get into push-up position — lie flat, face down."
+
+────────────────────────────────────────────────────────────────────────────────
+FEATURE: Docker multi-stage containerisation
+────────────────────────────────────────────────────────────────────────────────
+
+FILES CREATED / MODIFIED:
+
+  backend/Dockerfile (multi-stage):
+    Stage 1 — base:         python:3.12-slim + system libs + pip install
+    Stage 2 — development:  copies source, runs Django dev server
+    Stage 3 — production:   installs gunicorn, collectstatic, runs 4 workers
+
+  frontend/Dockerfile (multi-stage):
+    Stage 1 — deps:         node:20-alpine + npm ci
+    Stage 2 — development:  Vite dev server on 0.0.0.0:5173
+    Stage 3 — builder:      npm run build (accepts VITE_* build args)
+    Stage 4 — production:   nginx:1.27-alpine serving /dist
+
+  frontend/nginx.conf:
+    - Serves React SPA (try_files → index.html for all routes)
+    - Proxies /api/ to Django container
+    - COOP/COEP headers on all responses (required for MediaPipe WASM)
+    - Gzip compression for JS/CSS/WASM
+    - 1-year cache on static assets
+
+  ai_model/Dockerfile (multi-stage):
+    Stage 1 — base:         python:3.12-slim + OpenCV system libs
+    Stage 2 — development:  uvicorn with --reload
+    Stage 3 — production:   uvicorn with 2 workers
+
+  docker-compose.yml (dev):
+    - backend:    port 8000, source mounted for live reload
+    - frontend:   port 5173, source mounted + node_modules volume
+    - ai_service: port 9001, under 'ai' profile (opt-in only)
+    - backend_db: named volume for SQLite persistence
+
+  docker-compose.prod.yml (prod overrides):
+    - No source mounts
+    - Backend: Gunicorn, migrate + collectstatic on startup
+    - Frontend: Nginx on port 80/443
+    - Reads SECRET_KEY, DJANGO_ALLOWED_HOSTS etc. from .env file
+
+  ai_model/requirements_ai.txt:
+    Separate lean requirements for AI container:
+    fastapi, uvicorn, pydantic, requests, httpx,
+    opencv-python-headless (no GUI libs), mediapipe, numpy
+
+────────────────────────────────────────────────────────────────────────────────
+FEATURE: README.md fully rewritten
+────────────────────────────────────────────────────────────────────────────────
+
+FILE: README.md (project root)
+
+  Full developer-facing documentation covering:
+  - What the app does (user flow)
+  - Architecture diagram
+  - Tech stack table
+  - Prerequisites (with/without Docker)
+  - Step-by-step local dev setup (3 terminals)
+  - Docker dev mode (docker compose up --build)
+  - Docker prod mode (compose + prod override + .env file)
+  - Useful Docker commands (logs, exec, rebuild, wipe)
+  - Environment variables reference (backend + frontend)
+  - All 8 exercises with slugs, detection method, camera position
+  - Plank special behaviour (countdown + alarm)
+  - Full API endpoint table
+  - Project directory tree
+  - Known limitations
+
+================================================================================
+  CURRENT STATE OF ALL EXERCISES (as of this update)
+================================================================================
+
+  Exercise         Slug               Browser AI   Python AI   DB has_ai_detection
+  ──────────────   ──────────────     ──────────   ─────────   ───────────────────
+  Squat            squat              YES          YES         TRUE
+  Push-up          push_up            YES          YES         TRUE
+  Sit-up           sit_up             YES          YES         TRUE
+  Plank            plank              YES          YES         TRUE
+  Jumping Jack     jumping_jack       YES          YES         TRUE
+  Lunges           lunges             YES          YES         TRUE
+  Burpee           burpee             YES          YES         TRUE
+  Mountain Climber mountain_climber   YES          YES         TRUE
+
+================================================================================
+  HOW TO RUN (quick reference — full detail in README.md)
+================================================================================
+
+  LOCAL DEV (no Docker):
+
+    Terminal 1 — Backend:
+      cd backend
+      python manage.py migrate && python manage.py seed_exercises
+      python manage.py runserver
+
+    Terminal 2 — Frontend:
+      cd frontend
+      npm install && npm run dev
+
+    Open: http://localhost:5173  (must be localhost, not 127.0.0.1)
+
+  DOCKER DEV:
+
+    docker compose up --build
+
+    Open: http://localhost:5173
+
+  DOCKER PROD:
+
+    # 1. Create .env file with SECRET_KEY, DEBUG=0, DJANGO_ALLOWED_HOSTS, etc.
+    # 2. Run:
+    docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+
+    Open: http://localhost (port 80)
+
+================================================================================
+END OF UPDATE LOG
+================================================================================
