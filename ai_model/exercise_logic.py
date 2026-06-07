@@ -11,6 +11,7 @@ from config import (
     LUNGE_DOWN_KNEE_ANGLE,
     LUNGE_UP_KNEE_ANGLE,
 )
+
 from landmarks import (
     LEFT_SHOULDER,
     RIGHT_SHOULDER,
@@ -19,6 +20,7 @@ from landmarks import (
     LEFT_ANKLE,
     RIGHT_ANKLE,
 )
+
 from pose_helpers import (
     calculate_angle,
     landmark_xy,
@@ -30,51 +32,125 @@ from pose_helpers import (
 )
 
 
+# More forgiving thresholds for real webcam movement.
+# Your old values were too strict, so many squats/pushups were not counted.
+SQUAT_DOWN_TRIGGER = max(SQUAT_DOWN_KNEE_ANGLE, 125)
+SQUAT_UP_TRIGGER = min(SQUAT_UP_KNEE_ANGLE, 155)
+
+PUSHUP_DOWN_TRIGGER = max(PUSHUP_DOWN_ELBOW_ANGLE, 115)
+PUSHUP_UP_TRIGGER = min(PUSHUP_UP_ELBOW_ANGLE, 145)
+
+REP_COOLDOWN_SECONDS = 0.35
+
+
+def _count_rep_once(state):
+    """
+    Count one rep, but prevent double-counting caused by camera jitter.
+    """
+    now = time.time()
+    last_rep_time = getattr(state, "last_rep_time", 0.0)
+
+    if now - last_rep_time >= REP_COOLDOWN_SECONDS:
+        state.reps += 1
+        state.last_rep_time = now
+        return True
+
+    return False
+
+
+def _avg(values):
+    clean_values = [value for value in values if value is not None]
+
+    if not clean_values:
+        return None
+
+    return average(clean_values)
+
+
+def _min(values):
+    clean_values = [value for value in values if value is not None]
+
+    if not clean_values:
+        return None
+
+    return min(clean_values)
+
+
 def analyze_squat(landmarks, state):
     knee_angles = []
     hip_angles = []
 
     for side in ["left", "right"]:
-        if required_side_visible(landmarks, side, ["shoulder", "hip", "knee", "ankle"]):
+        if required_side_visible(
+            landmarks,
+            side,
+            ["shoulder", "hip", "knee", "ankle"],
+        ):
             points = get_side_points(landmarks, side)
-            knee_angles.append(calculate_angle(points["hip"], points["knee"], points["ankle"]))
-            hip_angles.append(calculate_angle(points["shoulder"], points["hip"], points["knee"]))
 
-    knee_angle = average(knee_angles)
-    hip_angle = average(hip_angles)
+            knee_angles.append(
+                calculate_angle(
+                    points["hip"],
+                    points["knee"],
+                    points["ankle"],
+                )
+            )
+
+            hip_angles.append(
+                calculate_angle(
+                    points["shoulder"],
+                    points["hip"],
+                    points["knee"],
+                )
+            )
+
+    # Use the deepest visible knee angle.
+    # Averaging both knees can hide a valid squat if one side is noisy.
+    knee_angle = _min(knee_angles)
+    average_knee_angle = _avg(knee_angles)
+    hip_angle = _avg(hip_angles)
 
     if knee_angle is None:
-        return set_no_landmarks_feedback(state)
+        return set_no_landmarks_feedback(
+            state,
+            "Move back. Keep hips, knees, and ankles visible.",
+        )
 
     if knee_angle < state.best_depth_angle:
         state.best_depth_angle = knee_angle
 
-    if knee_angle > SQUAT_UP_KNEE_ANGLE:
-        if state.position == "DOWN":
-            state.reps += 1
-            state.best_depth_angle = 999.0
-        state.position = "UP"
+    is_down = knee_angle <= SQUAT_DOWN_TRIGGER
+    is_up = (average_knee_angle or knee_angle) >= SQUAT_UP_TRIGGER
 
-    elif knee_angle < SQUAT_DOWN_KNEE_ANGLE:
+    if is_down:
         state.position = "DOWN"
+
+    elif is_up:
+        if state.position == "DOWN":
+            _count_rep_once(state)
+            state.best_depth_angle = 999.0
+
+        state.position = "UP"
 
     feedback = []
     score = 100
 
     if state.position == "UNKNOWN":
         feedback.append("Start standing tall, then squat.")
+
     elif state.position == "UP":
         feedback.append("Standing tall. Start next rep.")
+
     elif state.position == "DOWN":
         feedback.append("Good depth. Push back up.")
 
-    if knee_angle > 130 and state.position != "UP":
-        feedback.append("Go lower.")
-        score -= 20
+    if state.position != "DOWN" and knee_angle > SQUAT_DOWN_TRIGGER:
+        feedback.append("Go lower until knees bend more.")
+        score -= 10
 
     if hip_angle is not None and hip_angle < 55:
         feedback.append("Keep chest up.")
-        score -= 25
+        score -= 20
 
     if not feedback:
         feedback.append("Move with control.")
@@ -82,7 +158,13 @@ def analyze_squat(landmarks, state):
     state.feedback = " ".join(feedback)
     state.form_score = max(0, min(100, score))
 
-    return {"Knee angle": knee_angle, "Hip angle": hip_angle}, state
+    metrics = {
+        "Knee angle": knee_angle,
+        "Avg knee angle": average_knee_angle,
+        "Hip angle": hip_angle,
+    }
+
+    return metrics, state
 
 
 def analyze_pushup(landmarks, state):
@@ -90,50 +172,82 @@ def analyze_pushup(landmarks, state):
     body_angles = []
 
     for side in ["left", "right"]:
-        if required_side_visible(landmarks, side, ["shoulder", "elbow", "wrist", "hip", "ankle"]):
+        if required_side_visible(
+            landmarks,
+            side,
+            ["shoulder", "elbow", "wrist", "hip", "ankle"],
+        ):
             points = get_side_points(landmarks, side)
-            elbow_angles.append(calculate_angle(points["shoulder"], points["elbow"], points["wrist"]))
-            body_angles.append(calculate_angle(points["shoulder"], points["hip"], points["ankle"]))
 
-    elbow_angle = average(elbow_angles)
-    body_angle = average(body_angles)
+            elbow_angles.append(
+                calculate_angle(
+                    points["shoulder"],
+                    points["elbow"],
+                    points["wrist"],
+                )
+            )
+
+            body_angles.append(
+                calculate_angle(
+                    points["shoulder"],
+                    points["hip"],
+                    points["ankle"],
+                )
+            )
+
+    elbow_angle = _avg(elbow_angles)
+    body_angle = _avg(body_angles)
 
     if elbow_angle is None:
         return set_no_landmarks_feedback(
             state,
-            "Use a side view. Keep shoulders, elbows, wrists, hips, and ankles visible.",
+            "Use side view. Keep shoulder, elbow, wrist, hip, and ankle visible.",
         )
 
-    if elbow_angle > PUSHUP_UP_ELBOW_ANGLE:
-        if state.position == "DOWN":
-            state.reps += 1
-        state.position = "UP"
+    is_down = elbow_angle <= PUSHUP_DOWN_TRIGGER
+    is_up = elbow_angle >= PUSHUP_UP_TRIGGER
 
-    elif elbow_angle < PUSHUP_DOWN_ELBOW_ANGLE:
+    if is_down:
         state.position = "DOWN"
+
+    elif is_up:
+        if state.position == "DOWN":
+            _count_rep_once(state)
+
+        state.position = "UP"
 
     feedback = []
     score = 100
 
     if state.position == "UNKNOWN":
         feedback.append("Start in a high plank, then lower.")
+
     elif state.position == "UP":
         feedback.append("Arms extended. Lower with control.")
+
     elif state.position == "DOWN":
         feedback.append("Good depth. Push back up.")
 
-    if body_angle is not None and body_angle < 160:
+    if body_angle is not None and body_angle < 150:
         feedback.append("Keep body straight.")
         score -= 25
 
-    if elbow_angle > 115 and state.position not in ["UP", "UNKNOWN"]:
+    if state.position != "DOWN" and elbow_angle > PUSHUP_DOWN_TRIGGER:
         feedback.append("Lower chest more.")
-        score -= 20
+        score -= 10
+
+    if not feedback:
+        feedback.append("Move with control.")
 
     state.feedback = " ".join(feedback)
     state.form_score = max(0, min(100, score))
 
-    return {"Elbow angle": elbow_angle, "Body angle": body_angle}, state
+    metrics = {
+        "Elbow angle": elbow_angle,
+        "Body angle": body_angle,
+    }
+
+    return metrics, state
 
 
 def analyze_jumping_jack(landmarks, state):
@@ -178,7 +292,8 @@ def analyze_jumping_jack(landmarks, state):
 
     if is_open:
         if state.position == "CLOSED":
-            state.reps += 1
+            _count_rep_once(state)
+
         state.position = "OPEN"
 
     elif is_closed:
@@ -189,8 +304,10 @@ def analyze_jumping_jack(landmarks, state):
 
     if state.position == "UNKNOWN":
         feedback.append("Start closed, then jump open.")
+
     elif state.position == "CLOSED":
         feedback.append("Closed position. Jump open.")
+
     elif state.position == "OPEN":
         feedback.append("Open position. Return closed.")
 
@@ -205,23 +322,39 @@ def analyze_jumping_jack(landmarks, state):
     state.feedback = " ".join(feedback)
     state.form_score = max(0, min(100, score))
 
-    return {"Foot ratio": foot_ratio, "Wrist height": average_shoulder_y - average_wrist_y}, state
+    metrics = {
+        "Foot ratio": foot_ratio,
+        "Wrist height": average_shoulder_y - average_wrist_y,
+    }
+
+    return metrics, state
 
 
 def analyze_plank(landmarks, state):
     body_angles = []
 
     for side in ["left", "right"]:
-        if required_side_visible(landmarks, side, ["shoulder", "hip", "ankle"]):
+        if required_side_visible(
+            landmarks,
+            side,
+            ["shoulder", "hip", "ankle"],
+        ):
             points = get_side_points(landmarks, side)
-            body_angles.append(calculate_angle(points["shoulder"], points["hip"], points["ankle"]))
+
+            body_angles.append(
+                calculate_angle(
+                    points["shoulder"],
+                    points["hip"],
+                    points["ankle"],
+                )
+            )
 
     body_angle = average(body_angles)
 
     if body_angle is None:
         return set_no_landmarks_feedback(
             state,
-            "Use a side view. Keep shoulder, hip, and ankle visible.",
+            "Use side view. Keep shoulder, hip, and ankle visible.",
         )
 
     score = 100
@@ -233,8 +366,12 @@ def analyze_plank(landmarks, state):
 
         state.position = "HOLD"
         state.plank_seconds = time.time() - state.plank_start_time
-        state.best_plank_seconds = max(state.best_plank_seconds, state.plank_seconds)
+        state.best_plank_seconds = max(
+            state.best_plank_seconds,
+            state.plank_seconds,
+        )
         feedback.append("Good plank. Keep holding.")
+
     else:
         state.position = "RESET"
         state.plank_start_time = None
@@ -249,7 +386,12 @@ def analyze_plank(landmarks, state):
     state.feedback = " ".join(feedback)
     state.form_score = max(0, min(100, score))
 
-    return {"Body angle": body_angle, "Hold seconds": state.plank_seconds}, state
+    metrics = {
+        "Body angle": body_angle,
+        "Hold seconds": state.plank_seconds,
+    }
+
+    return metrics, state
 
 
 def analyze_lunge(landmarks, state):
@@ -257,17 +399,54 @@ def analyze_lunge(landmarks, state):
     right_knee_angle = None
     torso_angles = []
 
-    if required_side_visible(landmarks, "left", ["shoulder", "hip", "knee", "ankle"]):
+    if required_side_visible(
+        landmarks,
+        "left",
+        ["shoulder", "hip", "knee", "ankle"],
+    ):
         points = get_side_points(landmarks, "left")
-        left_knee_angle = calculate_angle(points["hip"], points["knee"], points["ankle"])
-        torso_angles.append(calculate_angle(points["shoulder"], points["hip"], points["knee"]))
 
-    if required_side_visible(landmarks, "right", ["shoulder", "hip", "knee", "ankle"]):
+        left_knee_angle = calculate_angle(
+            points["hip"],
+            points["knee"],
+            points["ankle"],
+        )
+
+        torso_angles.append(
+            calculate_angle(
+                points["shoulder"],
+                points["hip"],
+                points["knee"],
+            )
+        )
+
+    if required_side_visible(
+        landmarks,
+        "right",
+        ["shoulder", "hip", "knee", "ankle"],
+    ):
         points = get_side_points(landmarks, "right")
-        right_knee_angle = calculate_angle(points["hip"], points["knee"], points["ankle"])
-        torso_angles.append(calculate_angle(points["shoulder"], points["hip"], points["knee"]))
 
-    knee_angles = [angle for angle in [left_knee_angle, right_knee_angle] if angle is not None]
+        right_knee_angle = calculate_angle(
+            points["hip"],
+            points["knee"],
+            points["ankle"],
+        )
+
+        torso_angles.append(
+            calculate_angle(
+                points["shoulder"],
+                points["hip"],
+                points["knee"],
+            )
+        )
+
+    knee_angles = [
+        angle
+        for angle in [left_knee_angle, right_knee_angle]
+        if angle is not None
+    ]
+
     torso_angle = average(torso_angles)
 
     if len(knee_angles) < 2:
@@ -277,11 +456,16 @@ def analyze_lunge(landmarks, state):
         )
 
     front_knee_angle = min(knee_angles)
-    both_legs_straight = left_knee_angle > LUNGE_UP_KNEE_ANGLE and right_knee_angle > LUNGE_UP_KNEE_ANGLE
+
+    both_legs_straight = (
+        left_knee_angle > LUNGE_UP_KNEE_ANGLE
+        and right_knee_angle > LUNGE_UP_KNEE_ANGLE
+    )
 
     if both_legs_straight:
         if state.position == "DOWN":
-            state.reps += 1
+            _count_rep_once(state)
+
         state.position = "UP"
 
     elif front_knee_angle < LUNGE_DOWN_KNEE_ANGLE:
@@ -292,8 +476,10 @@ def analyze_lunge(landmarks, state):
 
     if state.position == "UNKNOWN":
         feedback.append("Step into a lunge, then stand tall.")
+
     elif state.position == "UP":
         feedback.append("Standing tall. Start next lunge.")
+
     elif state.position == "DOWN":
         feedback.append("Good lunge depth. Push back up.")
 
@@ -301,6 +487,7 @@ def analyze_lunge(landmarks, state):
         if front_knee_angle < 75:
             feedback.append("Do not overbend the front knee.")
             score -= 15
+
         elif front_knee_angle > 105:
             feedback.append("Lower a little more.")
             score -= 15
@@ -312,11 +499,13 @@ def analyze_lunge(landmarks, state):
     state.feedback = " ".join(feedback)
     state.form_score = max(0, min(100, score))
 
-    return {
+    metrics = {
         "Front knee": front_knee_angle,
         "Left knee": left_knee_angle,
         "Right knee": right_knee_angle,
-    }, state
+    }
+
+    return metrics, state
 
 
 def analyze_exercise(landmarks, state):
@@ -337,4 +526,5 @@ def analyze_exercise(landmarks, state):
 
     state.feedback = "Unknown exercise selected."
     state.form_score = 0
+
     return {}, state

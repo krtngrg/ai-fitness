@@ -6,10 +6,19 @@ import numpy as np
 
 from calorie_tracker import CalorieTracker
 from config import CAMERA_INDEX, EXERCISE_KEYS, MODEL_PATH, WINDOW_NAME
-from drawing import draw_info_panel, draw_pose, format_metric
+from drawing import (
+    draw_info_panel,
+    draw_pose,
+    format_metric,
+    setup_camera_window,
+)
 from exercise_logic import analyze_exercise
 from pose_landmarker import create_pose_landmarker
 from state import MoveMateState, reset_state
+
+
+CAMERA_WIDTH = 1280
+CAMERA_HEIGHT = 720
 
 
 def print_exercise_menu():
@@ -24,21 +33,37 @@ def print_exercise_menu():
     print("  q = quit")
 
 
+def open_camera():
+    cap = cv2.VideoCapture(CAMERA_INDEX)
+
+    if not cap.isOpened():
+        print("ERROR: Could not open webcam.")
+        print("Try changing CAMERA_INDEX in config.py.")
+        return None
+
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
+
+    return cap
+
+
 def main():
     print("Starting MoveMate AI MVP-1...")
     print("Using MediaPipe Tasks Pose Landmarker.")
     print("Checking model:", MODEL_PATH)
     print_exercise_menu()
 
-    cap = cv2.VideoCapture(CAMERA_INDEX)
+    cap = open_camera()
 
-    if not cap.isOpened():
-        print("ERROR: Could not open webcam.")
-        print("Try changing CAMERA_INDEX = 0 to CAMERA_INDEX = 1 in config.py")
+    if cap is None:
         return
 
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 960)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+    setup_camera_window(
+        WINDOW_NAME,
+        width=CAMERA_WIDTH,
+        height=CAMERA_HEIGHT,
+        fullscreen=True,
+    )
 
     state = MoveMateState()
     calorie_tracker = CalorieTracker()
@@ -55,110 +80,127 @@ def main():
         print("Original error:")
         print(error)
         cap.release()
+        cv2.destroyAllWindows()
         return
 
-    with landmarker:
-        while True:
-            success, frame = cap.read()
+    try:
+        with landmarker:
+            while True:
+                success, frame = cap.read()
 
-            if not success:
-                print("ERROR: Could not read frame.")
-                break
+                if not success:
+                    print("ERROR: Could not read frame.")
+                    break
 
-            frame_count += 1
-            frame = cv2.flip(frame, 1)
+                frame_count += 1
 
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            rgb_frame = np.ascontiguousarray(rgb_frame)
+                frame = cv2.flip(frame, 1)
 
-            mp_image = mp.Image(
-                image_format=mp.ImageFormat.SRGB,
-                data=rgb_frame,
-            )
+                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                rgb_frame = np.ascontiguousarray(rgb_frame)
 
-            timestamp_ms = int((time.time() - start_time) * 1000)
-            result = landmarker.detect_for_video(mp_image, timestamp_ms)
-
-            metrics = {}
-
-            if result.pose_landmarks:
-                landmarks = result.pose_landmarks[0]
-
-                old_reps = state.reps
-                metrics, state = analyze_exercise(landmarks, state)
-
-                if state.exercise == "Plank":
-                    calories_burned = calorie_tracker.update_plank(
-                        state.plank_seconds
-                    )
-                else:
-                    calories_burned = calorie_tracker.update_by_reps(
-                        exercise_name=state.exercise,
-                        reps=state.reps,
-                    )
-
-                if state.reps > old_reps:
-                    print(
-                        f"Good {state.exercise}! "
-                        f"Reps={state.reps} | "
-                        f"Calories={calories_burned:.2f}"
-                    )
-
-                draw_pose(frame, landmarks)
-
-            else:
-                state.feedback = "No person detected. Step into view."
-                state.form_score = 0
-                calories_burned = calorie_tracker.total_calories
-
-                if state.exercise == "Plank":
-                    state.plank_start_time = None
-                    state.plank_seconds = 0.0
-
-            draw_info_panel(frame, state, metrics, calories_burned)
-
-            if frame_count % 15 == 0:
-                metric_text = " | ".join(
-                    f"{label}={format_metric(value)}"
-                    for label, value in list(metrics.items())[:3]
+                mp_image = mp.Image(
+                    image_format=mp.ImageFormat.SRGB,
+                    data=rgb_frame,
                 )
 
-                if metric_text:
-                    print(
-                        f"Exercise={state.exercise} | "
-                        f"State={state.position} | "
-                        f"Reps={state.reps} | "
-                        f"Calories={calories_burned:.2f} | "
-                        f"{metric_text} | "
-                        f"Score={state.form_score}"
-                    )
+                timestamp_ms = int((time.time() - start_time) * 1000)
+                result = landmarker.detect_for_video(mp_image, timestamp_ms)
+
+                metrics = {}
+
+                if result.pose_landmarks:
+                    landmarks = result.pose_landmarks[0]
+
+                    old_reps = state.reps
+                    metrics, state = analyze_exercise(landmarks, state)
+
+                    if state.exercise == "Plank":
+                        calories_burned = calorie_tracker.update_plank(
+                            state.plank_seconds
+                        )
+                    else:
+                        calories_burned = calorie_tracker.update_by_reps(
+                            exercise_name=state.exercise,
+                            reps=state.reps,
+                        )
+
+                    if state.reps > old_reps:
+                        print(
+                            f"Good {state.exercise}! "
+                            f"Reps={state.reps} | "
+                            f"Calories={calories_burned:.2f}"
+                        )
+
+                    draw_pose(frame, landmarks)
+
                 else:
-                    print(f"Exercise={state.exercise} | Waiting for landmarks...")
+                    state.feedback = "No person detected. Step into view."
+                    state.form_score = 0
+                    calories_burned = calorie_tracker.total_calories
 
-            cv2.imshow(WINDOW_NAME, frame)
+                    if state.exercise == "Plank":
+                        state.plank_start_time = None
+                        state.plank_seconds = 0.0
 
-            key = cv2.waitKey(1) & 0xFF
+                draw_info_panel(
+                    frame,
+                    state,
+                    metrics,
+                    calories_burned,
+                    current_set=1,
+                    total_sets=1,
+                    planned_reps=None,
+                    planned_duration=None,
+                    elapsed=time.time() - start_time,
+                )
 
-            if key == ord("q"):
-                break
+                if frame_count % 30 == 0:
+                    metric_text = " | ".join(
+                        f"{label}={format_metric(value)}"
+                        for label, value in list(metrics.items())[:3]
+                    )
 
-            if key == ord("r"):
-                state = reset_state(state.exercise)
-                print(f"{state.exercise} counter reset.")
+                    if metric_text:
+                        print(
+                            f"Exercise={state.exercise} | "
+                            f"State={state.position} | "
+                            f"Reps={state.reps} | "
+                            f"Calories={calories_burned:.2f} | "
+                            f"{metric_text} | "
+                            f"Score={state.form_score}"
+                        )
+                    else:
+                        print(
+                            f"Exercise={state.exercise} | "
+                            "Waiting for landmarks..."
+                        )
 
-            if key == ord("c"):
-                calorie_tracker.reset()
-                calories_burned = 0.0
-                print("Calories reset.")
+                cv2.imshow(WINDOW_NAME, frame)
 
-            if key in EXERCISE_KEYS:
-                selected_exercise = EXERCISE_KEYS[key]
-                state = reset_state(selected_exercise)
-                print(f"Switched to {selected_exercise}.")
+                key = cv2.waitKey(1) & 0xFF
 
-    cap.release()
-    cv2.destroyAllWindows()
-    print("MoveMate AI stopped.")
+                if key == ord("q"):
+                    break
+
+                if key == ord("r"):
+                    state = reset_state(state.exercise)
+                    print(f"{state.exercise} counter reset.")
+
+                elif key == ord("c"):
+                    calorie_tracker.reset()
+                    calories_burned = 0.0
+                    print("Calories reset.")
+
+                elif key in EXERCISE_KEYS:
+                    selected_exercise = EXERCISE_KEYS[key]
+                    state = reset_state(selected_exercise)
+                    print(f"Switched to {selected_exercise}.")
+
+    finally:
+        cap.release()
+        cv2.destroyAllWindows()
+        print("MoveMate AI stopped.")
 
 
 if __name__ == "__main__":
