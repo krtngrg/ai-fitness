@@ -28,12 +28,14 @@ export default function Dashboard() {
     setStarting(true);
     try {
       const data = await startSession(today.roadmap_day_id);
-      // Session started — mark today as in-progress so the button disappears
-      setToday((prev) => ({ ...prev, completed: true }));
-      alert(`Workout session started!\nSession ID: ${data.session_id}\n\nOpen the AI model to begin tracking.`);
+      navigate("/exercise-selection", {
+        state: {
+          session_id: data.session_id,
+          exercises: data.ai_launch?.exercise_options || [],
+        },
+      });
     } catch (err) {
       alert(err.message);
-    } finally {
       setStarting(false);
     }
   }

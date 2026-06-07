@@ -1088,3 +1088,44 @@ input::placeholder {
     min-width: 140px;
   }
 }
+
+/* ── EXERCISE SELECTION ─────────────────────────────────────────────────── */
+
+.exercise-select-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 600px;
+}
+
+.exercise-select-card {
+  background: #111;
+  border: 1px solid #222;
+  border-radius: 12px;
+  padding: 16px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.exercise-select-info {
+  flex: 1;
+}
+
+.exercise-select-name {
+  font-weight: 700;
+  font-size: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.exercise-select-detail {
+  color: #aaa;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}

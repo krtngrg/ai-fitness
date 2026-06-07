@@ -1,0 +1,1071 @@
+MoveMate AI — Webcam AI Integration Prompt for Kiro
+You are a senior full-stack AI integration engineer.
+
+I am building a fitness AI app called MoveMate AI.
+
+The project already has:
+
+1. Frontend:
+- React + Vite
+- Dashboard page
+- Goal Planner page
+- Workout History page
+- Profile page
+- Sidebar navigation
+- Dark UI theme
+
+2. Backend:
+- Django
+- Django REST Framework
+- JWT auth
+- HttpOnly cookie auth
+- Bearer token support
+- drf-spectacular Swagger docs
+- Fitness plan generation backend
+- Roadmap/day/exercise planning
+- Workout session saving APIs
+- Dashboard summary APIs
+
+3. AI model:
+There is already a Python AI webcam engine inside:
+
+project root:
+movemate_mvp0_ai_engine/
+├── ai_model/
+│   ├── calorie_tracker.py
+│   ├── config.py
+│   ├── drawing.py
+│   ├── exercise_logic.py
+│   ├── landmarks.py
+│   ├── main.py
+│   ├── pose_helpers.py
+│   ├── pose_landmarker_lite.task
+│   ├── pose_landmarker.py
+│   ├── squat_detector.py
+│   └── state.py
+├── backend/
+└── frontend/
+
+The AI model already opens webcam and shows:
+- exercise name
+- state
+- reps
+- calories
+- form score
+- feedback
+- key controls:
+  - 1 squat
+  - 2 push-up
+  - 3 jumping jack
+  - 4 plank
+  - 5 lunge
+  - c reset calories
+  - q quit
+
+Now I want to integrate this AI model with the backend and frontend.
+
+Goal:
+When the user clicks “Start Workout” from the React dashboard, the app should start a workout session, open/use the webcam AI model, track reps, calories, posture score, feedback, then save the final workout result into the Django database.
+
+Important:
+For this MVP, it is okay if the Python AI model opens a local OpenCV webcam window. Later we can move to browser webcam/WebRTC. For now, integrate the existing Python AI model cleanly.
+Current User Flow Required
+User logs in
+↓
+User creates a fitness plan in Goal Planner
+↓
+Dashboard shows today's workout:
+Example:
+Day 1 — Full Body
+- Squat: 3 sets x 10 reps
+- Push Up: 3 sets x 8 reps
+- Sit Up: 3 sets x 12 reps
+- Plank: 3 sets x 30 sec
+↓
+User clicks Start Workout
+↓
+Backend creates WorkoutSession
+↓
+Frontend opens LiveWorkout page
+↓
+AI webcam starts
+↓
+AI detects exercise, reps, calories, posture score, feedback
+↓
+User finishes workout
+↓
+AI result is sent to backend
+↓
+Backend saves:
+- WorkoutSession
+- ExerciseLog
+- AIModelRun
+- PostureEvent
+- DailyCalorieSummary
+↓
+Dashboard updates:
+- calories burned today
+- calories burned this week
+- workouts completed
+- today's workout completed
+↓
+Workout History shows saved session
+Important Architecture Decision
+Use this architecture for MVP:
+
+Frontend React
+↓
+Django Backend API
+↓
+Python AI Model Runner
+
+The backend should expose APIs for workout sessions and saving AI results.
+
+The AI model should not directly write to the database.
+The AI model should return/send JSON result to Django backend.
+
+Do not store raw webcam video.
+Only store:
+- reps
+- calories
+- form score
+- feedback
+- posture issues
+- important landmark angles
+Required Integration Approach
+Create a clean AI runner wrapper around the existing ai_model/main.py.
+
+Current AI files should not be destroyed.
+
+Add a new file:
+
+ai_model/workout_runner.py
+
+This file should expose a function:
+
+run_ai_workout(
+    session_id: str,
+    exercise_slug: str,
+    planned_reps: int | None,
+    planned_sets: int | None,
+    planned_duration_seconds: int | None,
+    roadmap_day_exercise_id: str | None,
+    backend_callback_url: str | None = None,
+    access_token: str | None = None
+) -> dict
+
+This function should:
+1. Open webcam using existing AI model logic.
+2. Track selected exercise.
+3. Count reps.
+4. Calculate calories.
+5. Calculate form score.
+6. Collect feedback events.
+7. Stop when:
+   - user presses q
+   - planned reps are completed
+   - planned duration is completed
+8. Return a JSON-compatible dict.
+9. If backend_callback_url is provided, POST result to Django backend.
+
+The result format must match Django Save AI Result API.
+AI Result JSON Format Required
+{
+  "model": {
+    "model_name": "MoveMate Pose AI",
+    "model_version": "1.0",
+    "detector_type": "squat_detector",
+    "metadata": {
+      "camera_fps": 30,
+      "model_file": "pose_landmarker_lite.task",
+      "device": "webcam",
+      "source": "opencv_local"
+    }
+  },
+  "session": {
+    "total_duration_seconds": 120,
+    "total_calories_burned": 5.2,
+    "average_posture_score": 84.0
+  },
+  "exercises": [
+    {
+      "roadmap_day_exercise_id": "UUID_OR_NULL",
+      "exercise_slug": "squat",
+      "actual_sets": 1,
+      "actual_reps": 10,
+      "actual_duration_seconds": 120,
+      "correct_reps": 8,
+      "incorrect_reps": 2,
+      "calories_burned": 5.2,
+      "posture_score": 84.0,
+      "posture_events": [
+        {
+          "timestamp_seconds": 12.5,
+          "issue_type": "bad_squat_depth",
+          "feedback": "Go lower and keep your back straight",
+          "posture_score": 72,
+          "landmark_data": {
+            "left_knee_angle": 95,
+            "right_knee_angle": 98,
+            "hip_angle": 110,
+            "back_angle": 82
+          }
+        }
+      ]
+    }
+  ]
+}
+Backend Models Required
+
+Check if these models already exist. If not, create them in fitness/models.py.
+
+Exercise
+Roadmap
+RoadmapDay
+RoadmapDayExercise
+WorkoutSession
+ExerciseLog
+AIModelRun
+PostureEvent
+DailyCalorieSummary
+Exercise
+Fields:
+- id UUID
+- name
+- slug unique
+- category
+- difficulty
+- estimated_calories_per_rep
+- estimated_calories_per_minute
+- has_ai_detection
+- created_at
+
+Example exercise data:
+
+Squat
+slug: squat
+estimated_calories_per_rep: 0.32
+has_ai_detection: true
+
+Push Up
+slug: push_up
+estimated_calories_per_rep: 0.29
+has_ai_detection: true
+
+Sit Up
+slug: sit_up
+estimated_calories_per_rep: 0.25
+has_ai_detection: true
+
+Plank
+slug: plank
+estimated_calories_per_minute: 4.0
+has_ai_detection: false
+
+Jumping Jack
+slug: jumping_jack
+estimated_calories_per_rep: 0.20
+has_ai_detection: true
+
+Lunge
+slug: lunge
+estimated_calories_per_rep: 0.30
+has_ai_detection: true
+WorkoutSession
+Fields:
+- id UUID
+- user ForeignKey
+- roadmap_day ForeignKey nullable
+- started_at
+- ended_at nullable
+- total_duration_seconds default 0
+- total_calories_burned default 0
+- average_posture_score nullable
+- completed default False
+- source choices: ai_camera/manual
+- created_at
+ExerciseLog
+Fields:
+- id UUID
+- session ForeignKey
+- roadmap_day_exercise ForeignKey nullable
+- exercise ForeignKey
+- planned_sets nullable
+- planned_reps nullable
+- planned_duration_seconds nullable
+- actual_sets default 0
+- actual_reps default 0
+- actual_duration_seconds default 0
+- planned_calories nullable
+- calories_burned default 0
+- posture_score nullable
+- correct_reps default 0
+- incorrect_reps default 0
+- completed default False
+- created_at
+AIModelRun
+Fields:
+- id UUID
+- session ForeignKey
+- model_name
+- model_version nullable
+- detector_type
+- started_at
+- ended_at nullable
+- metadata JSONField default dict
+- created_at
+PostureEvent
+Fields:
+- id UUID
+- ai_run ForeignKey
+- exercise_log ForeignKey nullable
+- timestamp_seconds
+- posture_score
+- issue_type
+- feedback
+- landmark_data JSONField default dict
+- created_at
+DailyCalorieSummary
+Fields:
+- id UUID
+- user ForeignKey
+- summary_date
+- planned_calories
+- actual_calories_burned
+- workout_completed
+- created_at
+- updated_at
+
+Unique:
+- user + summary_date
+Backend APIs Required
+
+Create or confirm these APIs.
+
+1. Start Workout Session API
+POST /api/fitness/workout-sessions/start/
+Auth required
+
+Request:
+
+{
+  "roadmap_day_id": "uuid"
+}
+
+Response:
+
+{
+  "message": "Workout session started",
+  "session_id": "uuid",
+  "roadmap_day_id": "uuid",
+  "started_at": "2026-06-07T10:00:00Z",
+  "ai_launch": {
+    "exercise_options": [
+      {
+        "roadmap_day_exercise_id": "uuid",
+        "exercise_slug": "squat",
+        "exercise_name": "Squat",
+        "planned_sets": 3,
+        "planned_reps": 10,
+        "planned_duration_seconds": null,
+        "planned_calories": "9.60",
+        "has_ai_detection": true
+      }
+    ]
+  }
+}
+
+Backend behavior:
+
+Check roadmap day belongs to logged-in user.
+Create WorkoutSession.
+Return session ID and today’s exercises.
+2. Save AI Workout Result API
+POST /api/fitness/workout-sessions/{session_id}/ai-result/
+Auth required
+
+Request is the AI result JSON.
+
+Backend behavior:
+
+Check session belongs to request.user.
+Create AIModelRun.
+Update WorkoutSession:
+ended_at
+total_duration_seconds
+total_calories_burned
+average_posture_score
+completed=True
+For each exercise result:
+find Exercise by slug
+find RoadmapDayExercise if ID provided
+create ExerciseLog
+save planned sets/reps/calories from RoadmapDayExercise
+save actual reps
+save correct reps
+save incorrect reps
+save calories burned
+save posture score
+For each posture event:
+create PostureEvent
+Update RoadmapDay.completed=True if session completed.
+Update or create DailyCalorieSummary.
+Return saved summary.
+
+Response:
+
+{
+  "message": "AI workout result saved successfully",
+  "session_id": "uuid",
+  "total_duration_seconds": 120,
+  "total_calories_burned": "5.20",
+  "average_posture_score": "84.00",
+  "completed": true
+}
+3. Workout History API
+GET /api/fitness/workout-sessions/
+Auth required
+
+Should return all workout sessions for logged-in user.
+
+Each session should include:
+
+date
+duration
+calories burned
+posture score
+completed
+exercises
+reps
+correct reps
+incorrect reps
+posture events
+4. Dashboard API
+GET /api/fitness/dashboard/
+Auth required
+
+Response:
+
+{
+  "burned_today": 5.2,
+  "planned_today": 375,
+  "burned_this_week": 120.5,
+  "workouts_done": 3,
+  "active_plan": {
+    "title": "75 kg to 70 kg Weight Loss Plan",
+    "total_weeks": 8,
+    "start_weight_kg": "75.00",
+    "target_weight_kg": "70.00",
+    "daily_calorie_burn_target": 375,
+    "weekly_calorie_burn_target": 2250
+  },
+  "today_workout": {
+    "roadmap_day_id": "uuid",
+    "day_number": 1,
+    "focus": "Full Body",
+    "planned_calories": 375,
+    "completed": false,
+    "exercises": [
+      {
+        "roadmap_day_exercise_id": "uuid",
+        "exercise_name": "Squat",
+        "exercise_slug": "squat",
+        "planned_sets": 3,
+        "planned_reps": 10,
+        "planned_duration_seconds": null,
+        "planned_calories": "9.60",
+        "has_ai_detection": true
+      }
+    ]
+  }
+}
+Frontend Integration Required
+
+Create these frontend files if not present:
+
+frontend/src/api/client.js
+frontend/src/api/workoutApi.js
+frontend/src/pages/ExerciseSelection.jsx
+frontend/src/pages/LiveWorkout.jsx
+frontend/src/pages/WorkoutResults.jsx
+frontend/src/api/client.js
+
+Create an API client that supports cookies and bearer token.
+
+Requirements:
+
+- BASE_URL should be from import.meta.env.VITE_API_URL
+- default fallback: http://127.0.0.1:8000/api
+- every request should include credentials: "include"
+- if access token is stored in localStorage, add Authorization header
+frontend/src/api/workoutApi.js
+
+Create functions:
+
+startWorkoutSession(roadmapDayId)
+saveAIWorkoutResult(sessionId, payload)
+getWorkoutHistory()
+getDashboardSummary()
+Frontend Dashboard Changes
+
+On Dashboard page:
+
+Add Start Workout button under Today’s Workout.
+
+When clicked:
+1. Call POST /api/fitness/workout-sessions/start/
+2. Save returned session_id in state/localStorage.
+3. Navigate to /exercise-selection
+4. Pass exercises from ai_launch.exercise_options
+Exercise Selection Page
+
+Create route:
+
+/exercise-selection
+
+Purpose:
+Show exercises from today’s workout.
+
+Example UI:
+
+Today's AI Workout
+
+Squat
+3 sets x 10 reps
+AI supported
+Start
+
+Push Up
+3 sets x 8 reps
+AI supported
+Start
+
+Plank
+3 sets x 30 seconds
+Manual / timer
+Start
+
+When user clicks Start on an exercise:
+Navigate to:
+
+/live-workout
+
+Pass:
+
+session_id
+roadmap_day_exercise_id
+exercise_slug
+planned_sets
+planned_reps
+planned_duration_seconds
+
+---
+
+# Live Workout Page
+
+Create route:
+
+```text
+/live-workout
+
+For MVP, because Python OpenCV AI opens a local webcam window, the React page should:
+
+Show selected exercise info.
+Show session ID.
+Show planned reps/sets.
+Have button:
+Start Local AI Camera
+Have button:
+I Finished Workout / Refresh Result
+Display status:
+Waiting for AI result
+AI running
+Workout saved
+
+---
+
+# How To Start AI Camera From Frontend
+
+Use one of these two MVP approaches.
+
+## Preferred MVP Approach: Separate Local AI Service
+
+Create a small FastAPI service inside:
+
+```text
+ai_model/api_server.py
+
+Run it separately:
+
+uvicorn ai_model.api_server:app --host 127.0.0.1 --port 9001 --reload
+
+Frontend calls:
+
+POST http://127.0.0.1:9001/ai/start-workout
+
+Request:
+
+{
+  "session_id": "uuid",
+  "roadmap_day_exercise_id": "uuid",
+  "exercise_slug": "squat",
+  "planned_sets": 3,
+  "planned_reps": 10,
+  "planned_duration_seconds": null,
+  "backend_callback_url": "http://127.0.0.1:8000/api/fitness/workout-sessions/{session_id}/ai-result/",
+  "access_token": "JWT_ACCESS_TOKEN"
+}
+
+AI service behavior:
+
+Start Python webcam AI.
+Track selected exercise.
+When finished, send result to backend_callback_url.
+Return result to frontend too.
+
+Response:
+
+{
+  "message": "AI workout completed",
+  "saved_to_backend": true,
+  "result": {
+    "session": {
+      "total_duration_seconds": 120,
+      "total_calories_burned": 5.2,
+      "average_posture_score": 84.0
+    }
+  }
+}
+
+Important:
+The AI service should not need database access.
+It only calls Django API.
+
+Alternative MVP Approach: Django Starts Subprocess
+
+Only use this if FastAPI service is not wanted.
+
+Create Django endpoint:
+
+POST /api/fitness/ai/start-local-camera/
+
+This endpoint starts:
+
+python ai_model/main.py --session-id ... --exercise squat --planned-reps 10
+
+But this is less clean because Django server should not usually open GUI webcam windows.
+
+Preferred approach is FastAPI local AI service.
+
+AI FastAPI Service Requirements
+
+Create:
+
+ai_model/api_server.py
+
+Use FastAPI.
+
+Endpoints:
+
+Health
+GET /health
+
+Response:
+
+{
+  "status": "ok",
+  "service": "MoveMate AI Camera Service"
+}
+Start Workout
+POST /ai/start-workout
+
+Request:
+
+{
+  "session_id": "uuid",
+  "roadmap_day_exercise_id": "uuid",
+  "exercise_slug": "squat",
+  "planned_sets": 3,
+  "planned_reps": 10,
+  "planned_duration_seconds": null,
+  "backend_callback_url": "http://127.0.0.1:8000/api/fitness/workout-sessions/uuid/ai-result/",
+  "access_token": "jwt"
+}
+
+Behavior:
+
+Validate exercise_slug.
+Call workout_runner.run_ai_workout().
+Get result JSON.
+POST result JSON to backend_callback_url with header:
+Authorization: Bearer <access_token>
+Return result.
+
+Use Python requests or httpx.
+
+AI Model Refactor Requirements
+
+Do not rewrite the full AI model unless necessary.
+
+Refactor carefully:
+
+Keep current ai_model/main.py working.
+Extract reusable logic into ai_model/workout_runner.py.
+main.py can call workout_runner.run_ai_workout() for CLI usage.
+api_server.py can also call workout_runner.run_ai_workout().
+
+The AI runner should track:
+
+exercise_slug
+actual_reps
+actual_sets
+actual_duration_seconds
+calories_burned
+posture_score
+correct_reps
+incorrect_reps
+feedback
+posture_events
+landmark_data
+
+Map exercise keys:
+
+1 -> squat
+2 -> push_up
+3 -> jumping_jack
+4 -> plank
+5 -> lunge
+
+Exercise slug values must match backend Exercise.slug:
+
+squat
+push_up
+jumping_jack
+plank
+lunge
+sit_up
+Calorie Calculation Rule
+
+Use the existing calorie_tracker.py if possible.
+
+Also support fallback estimates:
+
+squat: 0.32 kcal per rep
+push_up: 0.29 kcal per rep
+sit_up: 0.25 kcal per rep
+jumping_jack: 0.20 kcal per rep
+lunge: 0.30 kcal per rep
+plank: 4 kcal per minute
+
+Example:
+
+Plan:
+Squat 10 reps
+
+AI detects:
+actual_reps = 10
+
+Calories:
+10 * 0.32 = 3.2 kcal
+
+Save:
+planned_reps = 10
+actual_reps = 10
+calories_burned = 3.2
+completed = true
+Posture Score Rule
+
+Use existing form score from AI model.
+
+If model returns score directly:
+
+Save it.
+
+If not:
+Calculate simple fallback:
+
+100 - incorrect_reps * 10
+minimum 0
+maximum 100
+
+Example:
+
+actual_reps = 10
+incorrect_reps = 2
+posture_score = 80
+correct_reps = 8
+Backend Save Logic Example
+
+When AI sends:
+
+{
+  "exercise_slug": "squat",
+  "actual_reps": 10,
+  "correct_reps": 8,
+  "incorrect_reps": 2,
+  "calories_burned": 3.2,
+  "posture_score": 80
+}
+
+Backend should create:
+
+WorkoutSession:
+completed = true
+total_calories_burned = 3.2
+average_posture_score = 80
+
+ExerciseLog:
+exercise = Squat
+planned_reps = 10
+actual_reps = 10
+correct_reps = 8
+incorrect_reps = 2
+calories_burned = 3.2
+posture_score = 80
+completed = true
+
+DailyCalorieSummary:
+actual_calories_burned += 3.2
+workout_completed = true
+Frontend Local AI Start Logic
+
+On LiveWorkout page:
+
+When user clicks "Start Local AI Camera":
+
+1. Get access token from localStorage or auth context.
+2. Build backend callback URL:
+   http://127.0.0.1:8000/api/fitness/workout-sessions/{session_id}/ai-result/
+
+3. Send POST to:
+   http://127.0.0.1:9001/ai/start-workout
+
+4. Show loading:
+   "AI camera running. Complete your exercise in the webcam window."
+
+5. When response returns:
+   Navigate to /workout-results
+
+6. WorkoutResults shows:
+   - reps completed
+   - calories burned
+   - posture score
+   - correct reps
+   - incorrect reps
+   - feedback
+Workout Results Page
+
+Create route:
+
+/workout-results
+
+Show:
+
+Workout Complete
+
+Exercise: Squat
+Planned: 10 reps
+Completed: 10 reps
+Correct reps: 8
+Incorrect reps: 2
+Calories burned: 3.2 kcal
+Form score: 80 / 100
+
+Feedback:
+- Go lower and keep your back straight
+- Keep your knees aligned with your toes
+
+Button:
+Back to Dashboard
+Workout History Page Update
+
+The Workout History page currently shows basic placeholder data.
+
+Update it to call:
+
+GET /api/fitness/workout-sessions/
+
+Display:
+
+Date
+Status
+Total calories
+Average form score
+Exercise logs:
+- Squat: 10 reps, 3.2 kcal, 80 score
+- Push Up: 8 reps, 2.3 kcal, 75 score
+Dashboard Update
+
+Update Dashboard page to call:
+
+GET /api/fitness/dashboard/
+
+Use backend data to show:
+
+Burned Today
+Planned Today
+Burned This Week
+Workouts Done
+Active Plan
+Today's Workout
+
+For each today's exercise show:
+
+Exercise name
+AI badge if has_ai_detection true
+planned sets x reps
+planned calories
+
+Add Start Workout button.
+
+Environment Variables
+
+Frontend .env:
+
+VITE_API_URL=http://127.0.0.1:8000/api
+VITE_AI_SERVICE_URL=http://127.0.0.1:9001
+
+Backend .env if needed:
+
+AI_SERVICE_URL=http://127.0.0.1:9001
+CORS Requirements
+
+Django backend must allow frontend:
+
+http://localhost:5173
+http://127.0.0.1:5173
+
+AI FastAPI service must also allow frontend:
+
+http://localhost:5173
+http://127.0.0.1:5173
+
+FastAPI CORS middleware required.
+
+Security Requirements
+
+For MVP local:
+
+Frontend may send access token to local AI service.
+AI service uses it only to call Django callback.
+Do not log access token.
+Do not store access token.
+Do not expose webcam frames.
+
+For production later:
+
+Replace with secure backend-issued short-lived AI session token.
+Or run pose detection in browser.
+Or use WebRTC with authentication.
+Swagger Requirements
+
+Update Swagger docs for Django backend.
+
+Add examples for:
+
+POST /api/fitness/workout-sessions/start/
+POST /api/fitness/workout-sessions/{session_id}/ai-result/
+GET /api/fitness/workout-sessions/
+GET /api/fitness/dashboard/
+
+The AI result endpoint should show full nested JSON example.
+
+Test Scenario
+
+Use this exact test:
+
+1. Login user.
+2. Generate plan:
+   current_weight_kg: 75
+   target_weight_kg: 70
+   duration_weeks: 8
+   activity_level: moderate
+
+3. Dashboard should show:
+   Active Plan
+   Today's Workout
+   Squat 3 sets x 10 reps
+
+4. Click Start Workout.
+5. Backend creates WorkoutSession.
+6. Go to Exercise Selection.
+7. Select Squat.
+8. Click Start Local AI Camera.
+9. Webcam opens.
+10. User performs 10 squats.
+11. AI calculates:
+    reps = 10
+    calories = around 3.2 kcal
+    form_score = some score
+12. AI posts result to Django backend.
+13. Backend saves ExerciseLog and DailyCalorieSummary.
+14. Dashboard updates Burned Today.
+15. Workout History shows the saved workout.
+Files To Create Or Update
+Backend Django:
+backend/fitness/models.py
+backend/fitness/serializers.py
+backend/fitness/views.py
+backend/fitness/urls.py
+backend/fitness/admin.py
+backend/fitness/services/calorie_calculator.py
+backend/fitness/services/plan_generator.py
+
+AI model:
+ai_model/workout_runner.py
+ai_model/api_server.py
+ai_model/main.py
+
+Frontend:
+frontend/src/api/client.js
+frontend/src/api/workoutApi.js
+frontend/src/pages/Dashboard.jsx
+frontend/src/pages/ExerciseSelection.jsx
+frontend/src/pages/LiveWorkout.jsx
+frontend/src/pages/WorkoutResults.jsx
+frontend/src/pages/WorkoutHistory.jsx
+frontend/src/App.jsx
+frontend/.env
+Final Output I Want
+Generate the complete integration code.
+
+Do not break existing frontend pages.
+Do not break existing backend auth.
+Do not remove current AI model files.
+Refactor the AI model carefully.
+Keep existing OpenCV window functionality.
+Make the AI service run separately on port 9001.
+Make Django backend run on port 8000.
+Make React frontend run on port 5173.
+
+After implementation, provide:
+1. All created/updated files.
+2. Commands to run backend.
+3. Commands to run AI service.
+4. Commands to run frontend.
+5. Swagger test payloads.
+6. Full test flow from login to saved workout.
+Commands The Final Project Should Support
+# Terminal 1: Django backend
+cd backend
+python manage.py runserver
+
+# Terminal 2: AI webcam service
+cd movemate_mvp0_ai_engine
+uvicorn ai_model.api_server:app --host 127.0.0.1 --port 9001 --reload
+
+# Terminal 3: React frontend
+cd frontend
+npm run dev
+Expected Final Result
+User creates a plan.
+Dashboard shows today's workout.
+User clicks Start Workout.
+User chooses Squat.
+Local webcam AI opens.
+AI counts reps and calories.
+AI gives form score and feedback.
+AI sends result to Django.
+Django saves result in database.
+Dashboard updates calories burned.
+Workout History shows the completed AI workout.

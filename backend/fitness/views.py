@@ -276,11 +276,26 @@ class StartWorkoutSessionView(APIView):
             source="ai_camera",
         )
 
+        exercise_options = []
+        for rde in roadmap_day.exercises.select_related("exercise").all():
+            exercise_options.append({
+                "roadmap_day_exercise_id": str(rde.id),
+                "exercise_slug": rde.exercise.slug,
+                "exercise_name": rde.exercise.name,
+                "planned_sets": rde.planned_sets,
+                "planned_reps": rde.planned_reps,
+                "planned_duration_seconds": rde.planned_duration_seconds,
+                "planned_calories": str(rde.planned_calories),
+                "has_ai_detection": rde.exercise.has_ai_detection,
+            })
+
         return Response(
             {
                 "message": "Workout session started",
                 "session_id": str(session.id),
+                "roadmap_day_id": str(roadmap_day.id),
                 "started_at": session.started_at,
+                "ai_launch": {"exercise_options": exercise_options},
             },
             status=status.HTTP_201_CREATED,
         )
