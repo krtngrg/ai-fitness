@@ -1,0 +1,30 @@
+CAMERA_INDEX = 0
+MODEL_PATH = "pose_landmarker_lite.task"
+
+MIN_VISIBILITY = 0.05
+
+USER_WEIGHT_KG = 60
+
+SQUAT_DOWN_KNEE_ANGLE = 105
+SQUAT_UP_KNEE_ANGLE = 160
+
+PUSHUP_DOWN_ELBOW_ANGLE = 95
+PUSHUP_UP_ELBOW_ANGLE = 155
+
+JACK_OPEN_FOOT_MULTIPLIER = 1.25
+JACK_CLOSED_FOOT_MULTIPLIER = 1.00
+
+PLANK_GOOD_BODY_ANGLE = 160
+
+LUNGE_DOWN_KNEE_ANGLE = 115
+LUNGE_UP_KNEE_ANGLE = 155
+
+WINDOW_NAME = "MoveMate AI - Multi-Exercise Detector"
+
+EXERCISE_KEYS = {
+    ord("1"): "Squat",
+    ord("2"): "Push-up",
+    ord("3"): "Jumping Jack",
+    ord("4"): "Plank",
+    ord("5"): "Lunge",
+}
