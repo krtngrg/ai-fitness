@@ -1,0 +1,158 @@
+# Requirements Document
+
+## Introduction
+
+This feature extends the MoveMate AI fitness app backend with an AI-powered workout planning and tracking engine. The system generates personalised multi-week fitness roadmaps from user goals, creates daily workout plans with progressive overload, tracks live AI webcam exercise results (reps, calories, posture), and provides dashboard summaries comparing planned vs actual performance. The backend exposes REST APIs consumed by the React frontend and the Python AI pose-estimation engine.
+
+## Glossary
+
+- **Exercise**: A named, catalogued movement (squat, push-up, etc.) with calorie estimation metadata.
+- **Roadmap**: A multi-week fitness plan generated from a FitnessGoal, containing daily workout days.
+- **RoadmapDay**: A single calendar day within a Roadmap, with a focus area and planned exercise list.
+- **RoadmapDayExercise**: A planned exercise entry within a RoadmapDay, including sets, reps, and estimated calories.
+- **WorkoutSession**: A live instance of a user performing their workout, linked to a RoadmapDay.
+- **ExerciseLog**: The actual performance record for one exercise within a WorkoutSession.
+- **AIModelRun**: Metadata record of a single AI pose-detection run attached to a WorkoutSession.
+- **PostureEvent**: A timestamped posture issue detected during an AIModelRun.
+- **DailyCalorieSummary**: Aggregated planned vs actual calorie data for one user on one calendar date.
+- **Plan_Generator**: The service responsible for creating Roadmap, RoadmapDay, and RoadmapDayExercise records.
+- **Calorie_Calculator**: The service responsible for all calorie and weight-loss arithmetic.
+- **AI_Engine**: The external Python webcam pose-estimation process that POSTs results to the backend.
+
+---
+
+## Requirements
+
+### Requirement 1: Exercise Catalogue
+
+**User Story:** As a developer, I want a seeded exercise catalogue, so that the plan generator can assign exercises with accurate calorie estimates.
+
+#### Acceptance Criteria
+
+1. THE System SHALL store Exercise records with id, name, slug, category, difficulty, estimated_calories_per_rep, estimated_calories_per_minute, has_ai_detection, and created_at fields.
+2. WHEN the seed command `python manage.py seed_exercises` is run, THE System SHALL create or update the eight canonical exercises: squat, push_up, sit_up, plank, jumping_jack, burpee, mountain_climber, and lunges.
+3. THE System SHALL mark squat with has_ai_detection=True.
+4. IF a slug already exists in the database, THEN THE System SHALL update the existing record rather than create a duplicate.
+
+---
+
+### Requirement 2: Fitness Roadmap Generation
+
+**User Story:** As a user, I want to enter my weight goal and receive a full multi-week exercise roadmap, so that I have a structured plan to follow.
+
+#### Acceptance Criteria
+
+1. WHEN a POST request is made to `/api/fitness/plans/generate/` with valid goal data, THE Plan_Generator SHALL create a FitnessGoal, a BodyMetric, a Roadmap, RoadmapDay records for every day of the plan, and RoadmapDayExercise records for each workout day.
+2. THE Plan_Generator SHALL calculate total_calorie_deficit as `weight_loss_kg × 7700`.
+3. THE Plan_Generator SHALL calculate daily_calorie_burn_target based on the user's activity_level: sedentary=300, light=375, moderate=500, active=600, very_active=700.
+4. THE Plan_Generator SHALL assign weekly_calorie_burn_target as `daily_calorie_burn_target × 6`.
+5. WHEN the calculated weekly weight-loss rate exceeds 1% of current body weight, THE Plan_Generator SHALL set a non-empty warning_message on the Roadmap.
+6. THE Plan_Generator SHALL rotate the day focus in this order: Full Body, Core, Lower Body, Cardio, Upper Body, Full Body, Rest — repeating across all weeks.
+7. THE Plan_Generator SHALL mark every 7th day in the cycle as is_rest_day=True with planned_calories=0.
+8. THE Plan_Generator SHALL apply progressive overload: sets and reps for each exercise increase by approximately 1–2 reps per week, following the canonical schedule (Week 1: 3×10 squats; Week 2: 3×12; Week 3: 4×12; Week 4: 4×14).
+9. THE Plan_Generator SHALL assign exercises per focus area according to the canonical mapping: Full Body (squat, push_up, sit_up, plank), Core (sit_up, plank, mountain_climber), Lower Body (squat, lunges, jumping_jack), Cardio (jumping_jack, burpee, mountain_climber), Upper Body (push_up, plank).
+10. THE Plan_Generator SHALL calculate and store planned_calories for each RoadmapDayExercise using the Calorie_Calculator.
+11. IF goal_type is `weight_loss` and target_weight_kg >= current_weight_kg, THEN THE System SHALL return a validation error.
+12. THE Plan_Generator SHALL set the Roadmap status to `active` on creation.
+
+---
+
+### Requirement 3: Calorie and Weight-Loss Arithmetic
+
+**User Story:** As a developer, I want accurate calorie and safety calculations, so that plans are realistic and warnings are shown for aggressive goals.
+
+#### Acceptance Criteria
+
+1. THE Calorie_Calculator SHALL compute weight_loss_kg as `current_weight − target_weight`.
+2. THE Calorie_Calculator SHALL compute total_calorie_deficit as `weight_loss_kg × 7700`.
+3. THE Calorie_Calculator SHALL compute daily_deficit as `total_calorie_deficit / total_days`.
+4. WHEN `weekly_loss / current_weight > 0.01`, THE Calorie_Calculator SHALL return a non-empty warning string.
+5. WHEN an exercise has reps, THE Calorie_Calculator SHALL estimate calories as `estimated_calories_per_rep × reps`.
+6. WHEN an exercise has duration_seconds but no reps, THE Calorie_Calculator SHALL estimate calories as `estimated_calories_per_minute × duration_seconds / 60`.
+7. WHEN an exercise has neither reps nor duration_seconds, THE Calorie_Calculator SHALL return 0.
+
+---
+
+### Requirement 4: Roadmap Retrieval APIs
+
+**User Story:** As a user, I want to view my roadmaps and today's workout, so that I know what exercises to do.
+
+#### Acceptance Criteria
+
+1. WHEN a GET request is made to `/api/fitness/roadmaps/`, THE System SHALL return all Roadmap records belonging to the authenticated user.
+2. WHEN a GET request is made to `/api/fitness/roadmaps/{id}/`, THE System SHALL return the Roadmap with its nested RoadmapDay and RoadmapDayExercise records.
+3. IF the id does not belong to the authenticated user, THEN THE System SHALL return HTTP 404.
+4. WHEN a GET request is made to `/api/fitness/roadmaps/today/`, THE System SHALL return the RoadmapDay whose workout_date matches today's date for the user's active Roadmap, along with its exercises.
+5. IF no active Roadmap or no RoadmapDay matches today's date, THEN THE System SHALL return HTTP 404.
+
+---
+
+### Requirement 5: Workout Session Lifecycle
+
+**User Story:** As a user, I want to start a workout session and have it linked to today's plan, so that my performance can be recorded.
+
+#### Acceptance Criteria
+
+1. WHEN a POST request is made to `/api/fitness/workout-sessions/start/` with a valid roadmap_day_id, THE System SHALL create a WorkoutSession with started_at set to the current UTC time and source=`ai_camera`.
+2. IF the roadmap_day_id does not belong to the authenticated user's roadmap, THEN THE System SHALL return HTTP 404.
+3. THE System SHALL return the session_id and started_at in the response.
+4. WHEN a GET request is made to `/api/fitness/workout-sessions/`, THE System SHALL return all WorkoutSessions belonging to the authenticated user with nested ExerciseLogs.
+5. WHEN a GET request is made to `/api/fitness/workout-sessions/{id}/`, THE System SHALL return the full WorkoutSession detail including ExerciseLogs.
+
+---
+
+### Requirement 6: AI Workout Result Ingestion
+
+**User Story:** As the AI engine, I want to POST webcam exercise results to the backend, so that actual reps, calories, and posture data are saved.
+
+#### Acceptance Criteria
+
+1. WHEN a POST request is made to `/api/fitness/workout-sessions/{session_id}/ai-result/`, THE System SHALL verify the session belongs to the authenticated user and return HTTP 404 if not.
+2. THE System SHALL create an AIModelRun record from the `model` block of the request payload.
+3. THE System SHALL update the WorkoutSession with ended_at, total_duration_seconds, total_calories_burned, average_posture_score, and completed=True.
+4. FOR EACH exercise entry in the payload, THE System SHALL create an ExerciseLog with actual_sets, actual_reps, correct_reps, incorrect_reps, calories_burned, posture_score, and planned_reps sourced from the linked RoadmapDayExercise if provided.
+5. THE System SHALL set ExerciseLog.completed=True when actual_reps >= planned_reps.
+6. FOR EACH posture_event in an exercise entry, THE System SHALL create a PostureEvent linked to the AIModelRun and ExerciseLog.
+7. THE System SHALL set RoadmapDay.completed=True when the session is marked completed.
+8. THE System SHALL create or update DailyCalorieSummary for the session date with planned_calories from the RoadmapDay and actual_calories_burned from the session.
+9. THE System SHALL return session_id, total_calories_burned, average_posture_score, and completed in the response.
+
+---
+
+### Requirement 7: Dashboard Summary
+
+**User Story:** As a user, I want a single dashboard API call that shows my progress, so that I can see my weight, calories, streak, and posture score at a glance.
+
+#### Acceptance Criteria
+
+1. WHEN a GET request is made to `/api/fitness/dashboard/`, THE System SHALL return current_weight_kg, target_weight_kg, active_goal, and active_roadmap for the authenticated user.
+2. THE System SHALL return today_planned_calories and today_actual_calories from the DailyCalorieSummary for today's date.
+3. THE System SHALL return weekly_planned_calories and weekly_actual_calories aggregated from DailyCalorieSummary records for the current ISO week.
+4. THE System SHALL return total_workouts_completed as the count of completed WorkoutSessions for the user.
+5. THE System SHALL return average_posture_score averaged across all ExerciseLogs with a non-null posture_score for the user.
+6. THE System SHALL return workout_streak as the number of consecutive calendar days (ending today) on which the user completed at least one workout.
+
+---
+
+### Requirement 8: Authentication and Data Isolation
+
+**User Story:** As a user, I want all my data to be private, so that other users cannot access or modify my records.
+
+#### Acceptance Criteria
+
+1. THE System SHALL require a valid JWT (cookie or Bearer header) for every endpoint under `/api/fitness/`.
+2. THE System SHALL filter all querysets by `request.user` and SHALL NOT accept a user_id field from any request body.
+3. IF an unauthenticated request is made to any protected endpoint, THEN THE System SHALL return HTTP 401.
+4. IF an authenticated user attempts to access another user's resource by id, THEN THE System SHALL return HTTP 404.
+
+---
+
+### Requirement 9: API Documentation
+
+**User Story:** As a developer, I want Swagger docs with request/response examples, so that I can test the API without reading the source code.
+
+#### Acceptance Criteria
+
+1. THE System SHALL expose drf-spectacular `@extend_schema` annotations on GeneratePlanView, TodayWorkoutView, StartWorkoutSessionView, SaveAIWorkoutResultView, and DashboardSummaryView.
+2. THE System SHALL include OpenApiExample entries for the Generate Plan POST and the AI Result POST endpoints.
+3. THE System SHALL accept Bearer token authorisation in Swagger UI via the existing `SPECTACULAR_SETTINGS` configuration.

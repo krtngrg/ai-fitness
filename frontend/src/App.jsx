@@ -7,6 +7,7 @@ import GoalPlanner from "./pages/GoalPlanner.jsx";
 import Dashboard from "./pages/Dashboard.jsx";
 import WorkoutHistory from "./pages/WorkoutHistory.jsx";
 import Profile from "./pages/Profile.jsx";
+import ProtectedRoute from "./components/ProtectedRoute.jsx";
 
 export default function App() {
   return (
@@ -15,10 +16,22 @@ export default function App() {
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
 
-      <Route path="/goal-planner" element={<GoalPlanner />} />
-      <Route path="/dashboard" element={<Dashboard />} />
-      <Route path="/workout-history" element={<WorkoutHistory />} />
-      <Route path="/profile" element={<Profile />} />
+      <Route
+        path="/goal-planner"
+        element={<ProtectedRoute><GoalPlanner /></ProtectedRoute>}
+      />
+      <Route
+        path="/dashboard"
+        element={<ProtectedRoute><Dashboard /></ProtectedRoute>}
+      />
+      <Route
+        path="/workout-history"
+        element={<ProtectedRoute><WorkoutHistory /></ProtectedRoute>}
+      />
+      <Route
+        path="/profile"
+        element={<ProtectedRoute><Profile /></ProtectedRoute>}
+      />
     </Routes>
   );
 }

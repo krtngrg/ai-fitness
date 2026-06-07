@@ -1,42 +1,48 @@
 import { NavLink } from "react-router-dom";
 import {
-  Home,
-  ClipboardList,
-  ChartNoAxesColumn,
-  History,
-  User,
+  LayoutDashboard, ClipboardList, History, User, Activity,
 } from "lucide-react";
 
 export default function Sidebar() {
   return (
     <aside className="sidebar">
       <div className="sidebar-logo">
-        <h2>MoveMate AI</h2>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <Activity size={20} />
+          <h2>MoveMate AI</h2>
+        </div>
         <p>Elite Performance</p>
       </div>
 
       <nav className="sidebar-nav">
-        <NavLink to="/goal-planner" className="sidebar-link">
-          <Home size={18} />
-          <span>Home</span>
+        <NavLink
+          to="/dashboard"
+          className={({ isActive }) => "sidebar-link" + (isActive ? " active" : "")}
+        >
+          <LayoutDashboard size={18} />
+          <span>Dashboard</span>
         </NavLink>
 
-        <NavLink to="/goal-planner" className="sidebar-link">
+        <NavLink
+          to="/goal-planner"
+          className={({ isActive }) => "sidebar-link" + (isActive ? " active" : "")}
+        >
           <ClipboardList size={18} />
           <span>Goal Planner</span>
         </NavLink>
 
-        <NavLink to="/dashboard" className="sidebar-link">
-          <ChartNoAxesColumn size={18} />
-          <span>Dashboard</span>
-        </NavLink>
-
-        <NavLink to="/workout-history" className="sidebar-link">
+        <NavLink
+          to="/workout-history"
+          className={({ isActive }) => "sidebar-link" + (isActive ? " active" : "")}
+        >
           <History size={18} />
           <span>Workout History</span>
         </NavLink>
 
-        <NavLink to="/profile" className="sidebar-link">
+        <NavLink
+          to="/profile"
+          className={({ isActive }) => "sidebar-link" + (isActive ? " active" : "")}
+        >
           <User size={18} />
           <span>Profile</span>
         </NavLink>
