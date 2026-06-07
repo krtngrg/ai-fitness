@@ -1,13 +1,12 @@
 """
 workout_runner.py — programmatic wrapper around the MoveMate AI model.
-Called by api_server.py (FastAPI) and can also be used from main.py CLI.
+Tracks sets, reps progress, shows completion screen between sets.
 """
 
 import os
 import sys
 import time
 
-# Allow imports from ai_model directory when called from outside
 _here = os.path.dirname(os.path.abspath(__file__))
 if _here not in sys.path:
     sys.path.insert(0, _here)
@@ -18,27 +17,18 @@ import numpy as np
 
 from calorie_tracker import CalorieTracker
 from config import CAMERA_INDEX, MODEL_PATH, WINDOW_NAME
-from drawing import draw_info_panel, draw_pose
+from drawing import draw_info_panel, draw_pose, draw_set_complete_screen, draw_all_sets_done_screen
 from exercise_logic import analyze_exercise
 from pose_landmarker import create_pose_landmarker
 from state import MoveMateState, reset_state
 
-# Slug → display name used by exercise_logic
 SLUG_TO_EXERCISE = {
     "squat": "Squat",
     "push_up": "Push-up",
     "jumping_jack": "Jumping Jack",
     "plank": "Plank",
     "lunge": "Lunge",
-    "lunges": "Lunge",  # DB uses 'lunges' slug
-}
-
-CALORIES_PER_REP_FALLBACK = {
-    "squat": 0.32,
-    "push_up": 0.29,
-    "sit_up": 0.25,
-    "jumping_jack": 0.20,
-    "lunge": 0.30,
+    "lunges": "Lunge",
 }
 
 
@@ -52,39 +42,29 @@ def run_ai_workout(
     backend_callback_url: str = None,
     access_token: str = None,
 ) -> dict:
-    """
-    Open webcam, run pose detection for the given exercise.
-    Stops when:
-      - user presses 'q'
-      - planned_reps reached
-      - planned_duration_seconds reached
-
-    Returns a JSON-compatible dict matching Django SaveAIWorkoutResult API.
-    If backend_callback_url is provided, POSTs result to Django.
-    """
     exercise_name = SLUG_TO_EXERCISE.get(exercise_slug)
     if not exercise_name:
         raise ValueError(f"Unsupported exercise slug: {exercise_slug}")
 
-    model_path = os.path.join(_here, MODEL_PATH)
+    total_sets = planned_sets or 1
+    reps_per_set = planned_reps  # None = free mode
 
     cap = cv2.VideoCapture(CAMERA_INDEX)
     if not cap.isOpened():
         raise RuntimeError("Could not open webcam. Check CAMERA_INDEX in config.py.")
-
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 960)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
-    state = reset_state(exercise_name)
     calorie_tracker = CalorieTracker()
-
     posture_events = []
     incorrect_reps_count = 0
-    last_reps = 0
     start_time = time.time()
     calories_burned = 0.0
 
-    # pose_landmarker.py uses a relative MODEL_PATH — must run from ai_model dir
+    # Per-set tracking
+    current_set = 1
+    total_actual_reps = 0
+
     _orig_cwd = os.getcwd()
     os.chdir(_here)
     try:
@@ -95,82 +75,129 @@ def run_ai_workout(
         raise RuntimeError(f"Could not load pose model: {e}")
 
     with landmarker:
-        while True:
-            elapsed = time.time() - start_time
+        while current_set <= total_sets:
+            state = reset_state(exercise_name)
+            set_start = time.time()
 
-            # Stop conditions
-            if planned_duration_seconds and elapsed >= planned_duration_seconds:
-                break
-            if planned_reps and state.reps >= planned_reps:
-                break
+            # ── Per-set loop ───────────────────────────────────────────────
+            while True:
+                elapsed = time.time() - start_time
+                set_elapsed = time.time() - set_start
 
-            success, frame = cap.read()
-            if not success:
-                break
+                # Duration-based stop
+                if planned_duration_seconds and elapsed >= planned_duration_seconds:
+                    total_actual_reps += state.reps
+                    current_set = total_sets + 1  # exit outer loop too
+                    break
 
-            frame = cv2.flip(frame, 1)
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            rgb_frame = np.ascontiguousarray(rgb_frame)
-            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+                # Reps target reached for this set
+                set_done = reps_per_set and state.reps >= reps_per_set
 
-            timestamp_ms = int(elapsed * 1000)
-            result = landmarker.detect_for_video(mp_image, timestamp_ms)
+                success, frame = cap.read()
+                if not success:
+                    break
 
-            metrics = {}
-            if result.pose_landmarks:
-                landmarks = result.pose_landmarks[0]
-                old_reps = state.reps
-                metrics, state = analyze_exercise(landmarks, state)
+                frame = cv2.flip(frame, 1)
+                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                rgb_frame = np.ascontiguousarray(rgb_frame)
+                mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+                timestamp_ms = int(elapsed * 1000)
+                result = landmarker.detect_for_video(mp_image, timestamp_ms)
 
-                if exercise_slug == "plank":
-                    calories_burned = calorie_tracker.update_plank(state.plank_seconds)
+                metrics = {}
+                if result.pose_landmarks:
+                    landmarks = result.pose_landmarks[0]
+                    old_reps = state.reps
+                    metrics, state = analyze_exercise(landmarks, state)
+
+                    if exercise_slug == "plank":
+                        calories_burned = calorie_tracker.update_plank(state.plank_seconds)
+                    else:
+                        calories_burned = calorie_tracker.update_by_reps(
+                            exercise_name=exercise_name, reps=state.reps
+                        )
+
+                    if state.reps > old_reps and state.form_score < 70:
+                        incorrect_reps_count += 1
+                        posture_events.append({
+                            "timestamp_seconds": round(elapsed, 3),
+                            "issue_type": "poor_form",
+                            "feedback": state.feedback,
+                            "posture_score": state.form_score,
+                            "landmark_data": {k: round(float(v), 2) for k, v in metrics.items()},
+                        })
+
+                    draw_pose(frame, landmarks)
                 else:
-                    calories_burned = calorie_tracker.update_by_reps(
-                        exercise_name=exercise_name, reps=state.reps
-                    )
+                    state.feedback = "No person detected. Step into view."
+                    state.form_score = 0
 
-                # Track bad reps (form_score < 70 on new rep)
-                if state.reps > old_reps and state.form_score < 70:
-                    incorrect_reps_count += 1
-                    posture_events.append({
-                        "timestamp_seconds": round(elapsed, 3),
-                        "issue_type": "poor_form",
-                        "feedback": state.feedback,
-                        "posture_score": state.form_score,
-                        "landmark_data": {k: round(float(v), 2) for k, v in metrics.items()},
-                    })
+                draw_info_panel(
+                    frame, state, metrics, calories_burned,
+                    current_set=current_set,
+                    total_sets=total_sets,
+                    planned_reps=reps_per_set,
+                    planned_duration=planned_duration_seconds,
+                    elapsed=set_elapsed,
+                )
 
-                draw_pose(frame, landmarks)
+                cv2.imshow(WINDOW_NAME, frame)
+                key = cv2.waitKey(1) & 0xFF
+
+                if key == ord("q"):
+                    total_actual_reps += state.reps
+                    current_set = total_sets + 1
+                    break
+
+                if set_done or key == ord("n"):
+                    total_actual_reps += state.reps
+                    break
+
             else:
-                state.feedback = "No person detected. Step into view."
-                state.form_score = 0
-
-            draw_info_panel(frame, state, metrics, calories_burned)
-
-            # Overlay planned info
-            cv2.putText(
-                frame,
-                f"Session: {session_id[:8]}...  Target: {planned_reps or planned_duration_seconds}",
-                (10, frame.shape[0] - 10),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1,
-            )
-
-            cv2.imshow(WINDOW_NAME, frame)
-
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord("q"):
+                # cap.read() failed
                 break
+
+            # ── Set complete screen ────────────────────────────────────────
+            if current_set <= total_sets:
+                is_last = current_set == total_sets
+                # Show completion / next screen until user presses N or Q
+                deadline = time.time() + (5 if is_last else 60)
+                while time.time() < deadline:
+                    success, frame = cap.read()
+                    if not success:
+                        break
+                    frame = cv2.flip(frame, 1)
+
+                    if is_last:
+                        draw_all_sets_done_screen(
+                            frame, exercise_name, total_sets,
+                            total_actual_reps, calories_burned,
+                        )
+                    else:
+                        draw_set_complete_screen(
+                            frame, current_set, total_sets,
+                            state.reps, reps_per_set, calories_burned,
+                        )
+
+                    cv2.imshow(WINDOW_NAME, frame)
+                    key = cv2.waitKey(1) & 0xFF
+                    if key == ord("q"):
+                        current_set = total_sets + 1
+                        break
+                    if key == ord("n") or is_last:
+                        if is_last:
+                            time.sleep(0.4)
+                        break
+
+                current_set += 1
 
     cap.release()
     cv2.destroyAllWindows()
     os.chdir(_orig_cwd)
 
     total_duration = round(time.time() - start_time)
-    actual_reps = state.reps
-    correct_reps = max(0, actual_reps - incorrect_reps_count)
-    posture_score = state.form_score if actual_reps > 0 else 0
-    if actual_reps > 0 and incorrect_reps_count > 0:
-        posture_score = max(0, 100 - incorrect_reps_count * 10)
+    correct_reps = max(0, total_actual_reps - incorrect_reps_count)
+    posture_score = max(0, 100 - incorrect_reps_count * 10) if total_actual_reps > 0 else 0
 
     result_payload = {
         "model": {
@@ -193,8 +220,8 @@ def run_ai_workout(
             {
                 "roadmap_day_exercise_id": roadmap_day_exercise_id,
                 "exercise_slug": exercise_slug,
-                "actual_sets": planned_sets or 1,
-                "actual_reps": actual_reps,
+                "actual_sets": total_sets,
+                "actual_reps": total_actual_reps,
                 "actual_duration_seconds": total_duration,
                 "correct_reps": correct_reps,
                 "incorrect_reps": incorrect_reps_count,
@@ -205,7 +232,6 @@ def run_ai_workout(
         ],
     }
 
-    # POST to Django backend if callback URL provided
     if backend_callback_url:
         _send_to_backend(backend_callback_url, result_payload, access_token)
 

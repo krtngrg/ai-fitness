@@ -1,0 +1,839 @@
+================================================================================
+  MOVEMATE AI — COMPLETE CODEBASE HANDOFF DOCUMENT
+  Written for: Next AI developer / developer continuing this project
+  Project root: movemate_mvp0_ai_engine/
+================================================================================
+
+This document describes every decision made, every file written, every bug fixed,
+and the exact current state of the codebase. Read this fully before touching any file.
+
+────────────────────────────────────────────────────────────────────────────────
+1. WHAT THIS PROJECT IS
+────────────────────────────────────────────────────────────────────────────────
+
+MoveMate AI is a local-first fitness tracking app that uses a real webcam to detect
+exercise reps and form quality using MediaPipe pose estimation. The user:
+
+  1. Creates a fitness plan (e.g. "lose 5kg in 8 weeks")
+  2. Gets an AI-generated weekly workout roadmap
+  3. Sees today's workout on the dashboard
+  4. Clicks "Start Workout" → picks an exercise → clicks "Start Local AI Camera"
+  5. A Python OpenCV window opens → user does squats/push-ups etc.
+  6. AI counts reps per set, shows form score, shows set-complete screens
+  7. When done, result is automatically sent to Django and saved to DB
+  8. Dashboard updates with calories burned, history page shows the session
+
+This is an MVP. The webcam runs as a LOCAL Python process (not in the browser).
+Browser-based webcam (WebRTC) is a future enhancement.
+
+────────────────────────────────────────────────────────────────────────────────
+2. SYSTEM ARCHITECTURE
+────────────────────────────────────────────────────────────────────────────────
+
+Three separate processes run simultaneously:
+
+  PROCESS 1: Django backend          → port 8000
+  PROCESS 2: FastAPI AI service      → port 9001
+  PROCESS 3: React + Vite frontend   → port 5173
+
+Communication:
+
+  Browser (5173)
+    │
+    ├─► GET/POST http://127.0.0.1:8000/api/...
+    │       Django handles auth, plan generation, session management, saving results
+    │
+    └─► POST http://127.0.0.1:9001/ai/start-workout
+            FastAPI receives request, calls workout_runner.run_ai_workout()
+            OpenCV window opens on user's screen
+            When workout ends, workout_runner POSTs result JSON to Django
+            FastAPI returns result to browser
+            Browser navigates to /workout-results
+
+Auth flow:
+  - Login returns JWT access + refresh tokens
+  - Tokens stored as HttpOnly cookies on the browser (secure)
+  - access_token ALSO returned in response body → frontend stores in localStorage
+  - localStorage copy is needed ONLY so the AI service can use it as Bearer token
+    when calling the Django callback URL (cookies don't work cross-process)
+  - Django's CookieJWTAuthentication reads the HttpOnly cookie
+  - Django also accepts "Authorization: Bearer <token>" header (for AI service callback)
+
+────────────────────────────────────────────────────────────────────────────────
+3. DIRECTORY STRUCTURE (every folder and file explained)
+────────────────────────────────────────────────────────────────────────────────
+
+movemate_mvp0_ai_engine/
+│
+├── README.md                       ← Full project README (704 lines)
+├── alltaskdone.txt                 ← THIS FILE
+├── nextplan.txt                    ← Original planning document (kept for reference)
+├── requirements.txt                ← opencv-python, mediapipe, numpy (minimal root deps)
+├── .gitignore
+├── venv/                           ← Python 3.12 virtual environment
+│
+├── ai_model/                       ← Python AI engine (all pose detection logic)
+│   ├── api_server.py               ← FastAPI service (entry point for AI process)
+│   ├── workout_runner.py           ← Core: set/rep loop, saves result to Django
+│   ├── main.py                     ← CLI standalone mode (python main.py)
+│   ├── exercise_logic.py           ← Pose analysis functions (one per exercise)
+│   ├── drawing.py                  ← OpenCV UI: all panel drawing functions
+│   ├── calorie_tracker.py          ← Accumulates calories by reps or time
+│   ├── pose_landmarker.py          ← Creates MediaPipe PoseLandmarker
+│   ├── pose_helpers.py             ← calculate_angle(), landmark_visible(), etc.
+│   ├── landmarks.py                ← Landmark index constants + POSE_CONNECTIONS list
+│   ├── state.py                    ← MoveMateState dataclass
+│   ├── config.py                   ← CAMERA_INDEX, MODEL_PATH, angle thresholds
+│   └── pose_landmarker_lite.task   ← Binary MediaPipe model file (~6MB, NOT in git)
+│
+├── backend/                        ← Django project
+│   ├── manage.py
+│   ├── db.sqlite3                  ← SQLite database (dev only)
+│   ├── backend/                    ← Django config package
+│   │   ├── settings.py             ← All settings: JWT, CORS, INSTALLED_APPS
+│   │   └── urls.py                 ← Root URL conf: /api/users/, /api/fitness/, /api/docs/
+│   │
+│   ├── users/                      ← Authentication app
+│   │   ├── models.py               ← Custom User: email login, UUID pk, no username
+│   │   ├── managers.py             ← UserManager: create_user uses email
+│   │   ├── authentication.py       ← CookieJWTAuthentication class (reads HttpOnly cookie)
+│   │   ├── jwt.py                  ← set_auth_cookies() / delete_auth_cookies() helpers
+│   │   ├── serializers.py          ← RegisterSerializer, LoginSerializer, UserSerializer
+│   │   ├── views.py                ← RegisterView, LoginView, LogoutView, MeView, RefreshView
+│   │   ├── schema.py               ← drf-spectacular schema helpers
+│   │   ├── admin.py                ← User registered in admin
+│   │   └── urls.py                 ← /auth/register/ /login/ /logout/ /me/ /refresh/
+│   │
+│   └── fitness/                    ← Main fitness app
+│       ├── models.py               ← All 10 models (see section 5)
+│       ├── serializers.py          ← All serializers (see section 6)
+│       ├── views.py                ← All API views (see section 7)
+│       ├── urls.py                 ← All URL routes
+│       ├── admin.py                ← All models registered in Django admin
+│       ├── apps.py                 ← FitnessConfig, imports signals
+│       ├── signals.py              ← Creates UserProfile on User post_save
+│       ├── services/
+│       │   ├── plan_generator.py   ← generate_roadmap_for_goal() — creates 56-day plan
+│       │   └── calorie_calculator.py ← BMR/TDEE calculations, daily calorie burn target
+│       └── management/commands/
+│           └── seed_exercises.py   ← Seeds 8 exercises into Exercise table
+│
+└── frontend/                       ← React + Vite SPA
+    ├── .env                        ← VITE_API_URL + VITE_AI_SERVICE_URL
+    ├── index.html
+    ├── vite.config.js
+    ├── package.json
+    └── src/
+        ├── main.jsx                ← Entry: BrowserRouter + AuthProvider wraps App
+        ├── App.jsx                 ← All <Route> definitions
+        ├── api/
+        │   └── client.js           ← All API calls: fetch wrappers, auto 401 refresh
+        ├── context/
+        │   └── AuthContext.jsx     ← Global auth state: user, setUser, logout
+        ├── components/
+        │   ├── AuthLayout.jsx      ← Shared Login + Register form (type prop)
+        │   ├── DashboardLayout.jsx ← Sidebar + <main> wrapper for all dashboard pages
+        │   ├── Sidebar.jsx         ← Nav links: Dashboard, Planner, History, Profile
+        │   ├── ProtectedRoute.jsx  ← Redirects to /login if user is null
+        │   ├── Navbar.jsx          ← Landing page top nav
+        │   ├── GoalPlanner.jsx     ← Goal planner form component (used in pages/GoalPlanner)
+        │   ├── StatCard.jsx        ← Simple stat display card component
+        │   └── FeatureCard.jsx     ← Feature highlight card for landing page
+        ├── pages/
+        │   ├── Landing.jsx         ← Public landing page with hero + features
+        │   ├── Login.jsx           ← Just renders <AuthLayout type="login" />
+        │   ├── Register.jsx        ← Just renders <AuthLayout type="register" />
+        │   ├── Dashboard.jsx       ← Main dashboard: stats, active plan, today workout, start button
+        │   ├── GoalPlanner.jsx     ← Generate AI plan form page
+        │   ├── ExerciseSelection.jsx ← Pick exercise from today's workout list
+        │   ├── LiveWorkout.jsx     ← Start AI camera button, status display
+        │   ├── WorkoutResults.jsx  ← Post-workout summary: reps/calories/form/feedback
+        │   ├── WorkoutHistory.jsx  ← All past sessions, expandable exercise logs
+        │   └── Profile.jsx         ← Edit weight, height, age, activity level
+        └── styles/
+            └── global.css          ← Dark theme (background #050505), all component styles
+
+────────────────────────────────────────────────────────────────────────────────
+4. PYTHON PACKAGES INSTALLED IN VENV
+────────────────────────────────────────────────────────────────────────────────
+
+AI / Computer Vision:
+  opencv-python==4.13.0.92        ← webcam capture, frame display, drawing
+  opencv-contrib-python==4.13.0.92
+  mediapipe==0.10.35              ← pose landmark detection (33 keypoints)
+  numpy==2.4.6                    ← frame array manipulation
+
+Django Backend:
+  django==6.0.6
+  djangorestframework==3.17.1
+  djangorestframework-simplejwt==5.5.1  ← JWT token generation + blacklisting
+  django-cors-headers==4.9.0      ← CORS for frontend
+  drf-spectacular==0.29.0         ← OpenAPI schema auto-generation
+
+AI Service:
+  fastapi==0.115.6
+  uvicorn==0.32.1
+  pydantic==2.13.4
+  requests==2.32.3                ← used by workout_runner to POST to Django
+  httpx==0.27.2                   ← available but requests used for callback
+
+────────────────────────────────────────────────────────────────────────────────
+5. DATABASE MODELS (backend/fitness/models.py)
+────────────────────────────────────────────────────────────────────────────────
+
+All models use UUID primary keys. All have created_at timestamps.
+
+  User (users/models.py)
+    - id: UUID
+    - email: unique (USERNAME_FIELD)
+    - name: CharField
+    - no username field (set to None)
+
+  UserProfile (fitness/models.py) — auto-created via signal on User creation
+    - user: OneToOne → User
+    - age, gender, height_cm, current_weight_kg, activity_level
+
+  BodyMetric
+    - user → User
+    - weight_kg, body_fat_percentage, waist_cm, recorded_at
+    - Creating/updating BodyMetric also updates UserProfile.current_weight_kg
+
+  FitnessGoal
+    - user → User
+    - goal_type: weight_loss/muscle_gain/maintenance/endurance
+    - start_weight_kg, target_weight_kg, start_date, target_date
+    - target_daily_calorie_burn, target_weekly_calorie_burn (filled after roadmap)
+    - status: active/completed/cancelled
+
+  Roadmap
+    - user → User, goal → FitnessGoal
+    - title, total_weeks, total_days, start_date, end_date
+    - daily_calorie_burn_target, weekly_calorie_burn_target
+    - ai_summary (text description), warning_message
+    - status: active/completed/cancelled
+
+  RoadmapDay
+    - roadmap → Roadmap
+    - day_number, week_number, workout_date
+    - focus: Full Body/Core/Lower Body/Upper Body/Cardio/Rest
+    - planned_calories, is_rest_day, completed
+    - UNIQUE: (roadmap, day_number)
+
+  RoadmapDayExercise
+    - roadmap_day → RoadmapDay, exercise → Exercise
+    - planned_sets, planned_reps (nullable), planned_duration_seconds (nullable)
+    - planned_calories, exercise_order, instructions
+
+  Exercise
+    - slug: unique (e.g. "squat", "push_up")
+    - name, category, difficulty
+    - estimated_calories_per_rep, estimated_calories_per_minute
+    - has_ai_detection: bool
+
+  WorkoutSession
+    - user → User, roadmap_day → RoadmapDay (nullable)
+    - started_at, ended_at, total_duration_seconds
+    - total_calories_burned, average_posture_score
+    - completed: bool, source: ai_camera/manual
+
+  ExerciseLog
+    - session → WorkoutSession
+    - roadmap_day_exercise → RoadmapDayExercise (nullable)
+    - exercise → Exercise
+    - planned_reps, actual_sets, actual_reps, actual_duration_seconds
+    - planned_calories, calories_burned
+    - posture_score, correct_reps, incorrect_reps, completed
+
+  AIModelRun
+    - session → WorkoutSession
+    - model_name, model_version, detector_type
+    - started_at, ended_at, metadata: JSONField
+
+  PostureEvent
+    - ai_run → AIModelRun
+    - exercise_log → ExerciseLog (nullable)
+    - timestamp_seconds, posture_score, issue_type, feedback
+    - landmark_data: JSONField (e.g. {"Knee angle": 98.5, "Hip angle": 78.3})
+
+  DailyCalorieSummary
+    - user → User, summary_date: DateField
+    - planned_calories, actual_calories_burned, workout_completed
+    - UNIQUE: (user, summary_date) — upserted after every workout save
+
+────────────────────────────────────────────────────────────────────────────────
+6. SERIALIZERS (backend/fitness/serializers.py)
+────────────────────────────────────────────────────────────────────────────────
+
+Input serializers (what APIs accept):
+  GeneratePlanSerializer         ← goal_type, weights, duration_weeks, age, gender, etc.
+  StartWorkoutSessionSerializer  ← roadmap_day_id: UUID
+
+  AIWorkoutResultSerializer      ← top-level container
+    └── model: AIModelInputSerializer
+          model_name, model_version, detector_type, metadata
+    └── session: AISessionInputSerializer
+          total_duration_seconds, total_calories_burned, average_posture_score
+    └── exercises[]: ExerciseResultInputSerializer
+          exercise_slug, roadmap_day_exercise_id (optional), actual_sets, actual_reps,
+          actual_duration_seconds, correct_reps, incorrect_reps, calories_burned,
+          posture_score, posture_events[]: PostureEventInputSerializer
+
+Output serializers (what APIs return):
+  WorkoutSessionSerializer        ← includes nested ExerciseLogSerializer
+  ExerciseLogSerializer           ← includes nested PostureEventSerializer + ExerciseSerializer
+  RoadmapSerializer               ← includes nested RoadmapDaySerializer → RoadmapDayExerciseSerializer
+  RoadmapListSerializer           ← lightweight, no nested days (for list views)
+
+────────────────────────────────────────────────────────────────────────────────
+7. API VIEWS (backend/fitness/views.py)
+────────────────────────────────────────────────────────────────────────────────
+
+UserProfileView (GET/PUT/PATCH /api/fitness/profile/)
+  - get_or_create UserProfile for current user
+
+BodyMetricViewSet (CRUD /api/fitness/body-metrics/)
+  - on create/update: also updates UserProfile.current_weight_kg
+
+FitnessGoalViewSet (CRUD /api/fitness/goals/)
+
+GeneratePlanView (POST /api/fitness/plans/generate/)
+  - Calls plan_generator.generate_roadmap_for_goal()
+  - Creates: BodyMetric, FitnessGoal, Roadmap, 56x RoadmapDay, RoadmapDayExercises
+  - Updates FitnessGoal with calorie targets from roadmap
+
+RoadmapViewSet (GET /api/fitness/roadmaps/ and /{id}/)
+  - list uses RoadmapListSerializer (no nested days)
+  - retrieve uses RoadmapSerializer (full nested days+exercises)
+
+TodayWorkoutView (GET /api/fitness/roadmaps/today/)
+  - Finds active roadmap, finds RoadmapDay where workout_date == today
+  - Returns day info + exercises list
+
+StartWorkoutSessionView (POST /api/fitness/workout-sessions/start/)
+  - Validates roadmap_day belongs to current user
+  - Creates WorkoutSession (source="ai_camera")
+  - Returns: session_id, roadmap_day_id, started_at
+  - Returns: ai_launch.exercise_options[] with all exercise details
+
+WorkoutSessionViewSet (GET /api/fitness/workout-sessions/ and /{id}/)
+  - Prefetches exercise_logs → exercise, posture_events
+
+SaveAIWorkoutResultView (POST /api/fitness/workout-sessions/{session_id}/ai-result/)
+  - Validates session belongs to current user
+  - Creates AIModelRun
+  - Updates WorkoutSession: ended_at, duration, calories, posture, completed=True
+  - For each exercise in payload:
+      - Finds Exercise by slug (returns 400 if not found)
+      - Finds RoadmapDayExercise by ID if provided (gets planned reps/calories)
+      - Creates ExerciseLog
+      - Creates PostureEvents
+  - Marks RoadmapDay.completed = True
+  - Upserts DailyCalorieSummary (update_or_create)
+
+DashboardSummaryView (GET /api/fitness/dashboard/)
+  - Today's DailyCalorieSummary
+  - This week's DailyCalorieSummaries (Mon-Sun)
+  - Total completed WorkoutSessions count
+  - Average posture score across all ExerciseLogs
+  - Workout streak (consecutive days with workout_completed=True)
+  - Active FitnessGoal + active Roadmap
+  - Current + target weight
+
+────────────────────────────────────────────────────────────────────────────────
+8. AUTH SYSTEM (backend/users/)
+────────────────────────────────────────────────────────────────────────────────
+
+Custom User model:
+  - Email is the login field (no username)
+  - UUID primary key
+  - AbstractUser base (has is_active, is_staff, etc.)
+
+CookieJWTAuthentication (users/authentication.py):
+  - Reads access token from request.COOKIES.get("access_token")
+  - Falls back to Authorization: Bearer header
+  - This means both cookies AND Bearer tokens work for all endpoints
+  - This is why the AI service can call Django with Bearer token
+
+JWT settings (settings.py):
+  - ACCESS_TOKEN_LIFETIME = 15 minutes
+  - REFRESH_TOKEN_LIFETIME = 7 days
+  - ROTATE_REFRESH_TOKENS = True (new refresh token on each refresh)
+  - BLACKLIST_AFTER_ROTATION = True (old refresh tokens blacklisted)
+  - Cookies: HttpOnly=True, Secure=False (dev), SameSite=Lax
+
+Login response:
+  - Sets two HttpOnly cookies: access_token, refresh_token
+  - Also returns access + refresh in JSON body
+  - Frontend stores access_token in localStorage for AI service use
+
+────────────────────────────────────────────────────────────────────────────────
+9. PLAN GENERATION (backend/fitness/services/plan_generator.py)
+────────────────────────────────────────────────────────────────────────────────
+
+generate_roadmap_for_goal(user, goal, profile, duration_weeks):
+  1. Calculates BMR using Mifflin-St Jeor formula
+  2. Calculates TDEE (BMR × activity multiplier)
+  3. Calculates required daily calorie burn to hit weight loss goal
+  4. Validates: if goal is impossible in timeframe, adds warning_message
+  5. Creates Roadmap with calorie targets
+  6. For each week (1 to duration_weeks):
+     - For each day (Mon-Sun):
+       - If Sunday or every 7th day: rest day
+       - Otherwise: pick focus (Full Body / Core / Lower Body / Upper Body / Cardio) in rotation
+       - Create RoadmapDay with workout_date
+       - Pick exercises from Exercise table matching the focus
+       - Create RoadmapDayExercise for each with planned sets, reps, estimated calories
+
+Exercise seeding (management/commands/seed_exercises.py):
+  Seeds these slugs: squat, push_up, sit_up, plank, jumping_jack, burpee, mountain_climber, lunges
+  Note: "lunges" (not "lunge") is the DB slug. workout_runner maps both.
+
+────────────────────────────────────────────────────────────────────────────────
+10. AI MODEL (ai_model/)
+────────────────────────────────────────────────────────────────────────────────
+
+--- api_server.py ---
+FastAPI app with CORS for localhost:5173.
+Two endpoints:
+  GET /health → { status: ok }
+  POST /ai/start-workout → validates slug, calls workout_runner.run_ai_workout()
+
+Request model (Pydantic):
+  session_id, exercise_slug, planned_sets, planned_reps, planned_duration_seconds,
+  roadmap_day_exercise_id, backend_callback_url, access_token
+
+SUPPORTED_SLUGS = {"squat", "push_up", "jumping_jack", "plank", "lunge", "lunges"}
+
+--- workout_runner.py ---
+run_ai_workout() function:
+  1. Maps exercise_slug → exercise display name (SLUG_TO_EXERCISE dict)
+  2. Opens webcam (cv2.VideoCapture)
+  3. CRITICAL: os.chdir(ai_model_dir) before creating landmarker
+     (pose_landmarker.py uses relative MODEL_PATH "pose_landmarker_lite.task"
+      so must be run from ai_model/ directory)
+  4. Outer loop: for each set (1 to planned_sets)
+     Inner loop per frame:
+       - Check stop conditions (duration elapsed, reps hit)
+       - Read frame, flip horizontally, convert to MediaPipe format
+       - Run landmarker.detect_for_video()
+       - If landmarks: run analyze_exercise(), update calories, track bad reps
+       - draw_pose(frame, landmarks)
+       - draw_info_panel(frame, state, metrics, calories, current_set, total_sets, planned_reps)
+       - cv2.imshow(), cv2.waitKey()
+       - Keys: Q=quit, N=next set
+     After set completes:
+       - Add set reps to total_actual_reps
+       - Show draw_set_complete_screen() or draw_all_sets_done_screen()
+       - Wait for N key or auto-advance after 5s (last set only)
+  5. cap.release(), cv2.destroyAllWindows(), os.chdir(orig_dir)
+  6. Build result_payload dict (matches Django AIWorkoutResultSerializer)
+  7. If backend_callback_url: POST result to Django with Bearer token
+  8. Return result_payload
+
+PostureEvent tracking:
+  - Any rep where form_score < 70 is logged as a PostureEvent
+  - landmark_data saved as dict {"Knee angle": 98.5, ...}
+  - incorrect_reps_count incremented
+
+--- exercise_logic.py ---
+analyze_exercise(landmarks, state) dispatches to:
+
+analyze_squat(landmarks, state):
+  - Calculates knee angle (hip→knee→ankle) and hip angle (shoulder→hip→knee)
+  - State machine: knee > 160° = UP, knee < 105° = DOWN, UP after DOWN = +1 rep
+  - Form deductions: -20 if not going low enough, -25 if leaning forward
+
+analyze_pushup(landmarks, state):
+  - Elbow angle (shoulder→elbow→wrist) + body angle (shoulder→hip→ankle)
+  - UP > 155°, DOWN < 95°
+  - Form deductions: -25 if body not straight, -20 if not low enough
+
+analyze_jumping_jack(landmarks, state):
+  - foot_ratio = foot_width / shoulder_width
+  - wrists_above_shoulders check
+  - OPEN: wrists above + foot_ratio > 1.25
+  - CLOSED: wrists below + foot_ratio < 1.0
+  - CLOSED → OPEN = +1 rep
+
+analyze_plank(landmarks, state):
+  - Body angle (shoulder→hip→ankle) must be >= 160° to start timer
+  - Tracks plank_seconds and best_plank_seconds on state
+  - No rep counting, time-based only
+
+analyze_lunge(landmarks, state):
+  - Both knee angles calculated
+  - Both > 155° = UP (standing)
+  - Front (min) knee < 115° = DOWN
+  - UP after DOWN = +1 rep
+
+--- drawing.py ---
+All drawing uses cv2 + numpy alpha blending for semi-transparent panels.
+
+draw_info_panel(frame, state, metrics, calories, current_set, total_sets, planned_reps, planned_duration, elapsed):
+  LEFT PANEL (semi-transparent rounded rect, top-left):
+    - "MoveMate AI" header in teal
+    - Exercise name in large white bold
+    - State badge (coloured pill: green for UP/HOLD, yellow for DOWN, red for RESET)
+    - Big rep counter "12 / 15" with rep progress bar
+    - Calories burned in teal
+    - Form score bar (green ≥80, yellow ≥50, red <50)
+    - Top 2 angle metrics in grey
+
+  TOP-RIGHT panel (SET 2/3 with coloured dots):
+    - Grey=upcoming, teal=current, green=completed
+
+  BOTTOM feedback pill (centred, semi-transparent):
+    - Current state.feedback text in yellow
+
+draw_set_complete_screen(frame, current_set, total_sets, reps_done, planned_reps, calories):
+  Full-screen dark overlay + centred modal:
+    - Green circle with ✓
+    - "SET 2 COMPLETE!"
+    - Reps done, calories so far
+    - Teal "Press N — Start Set 3" button
+
+draw_all_sets_done_screen(frame, exercise_name, total_sets, total_reps, calories):
+  Full-screen overlay + modal:
+    - Teal circle with !
+    - "WORKOUT COMPLETE!"
+    - Stats grid: Sets / Reps / Calories
+    - "Great work! Results are being saved..."
+    - "Window closes automatically."
+
+--- state.py ---
+@dataclass MoveMateState:
+  exercise, position, reps, best_depth_angle, plank_start_time,
+  plank_seconds, best_plank_seconds, feedback, form_score
+
+reset_state(exercise) → fresh MoveMateState for given exercise
+
+--- calorie_tracker.py ---
+CalorieTracker:
+  total_calories: float
+  update_by_reps(exercise_name, reps): adds calories for new reps since last call
+  update_plank(plank_seconds): adds calories for new seconds since last call
+  reset(): zeros all
+
+CALORIES_PER_REP = {Squat: 0.32, Push-up: 0.29, Jumping Jack: 0.20, Lunge: 0.30}
+PLANK_CALORIES_PER_SECOND = 0.06
+
+--- config.py ---
+CAMERA_INDEX = 0          ← change to 1 if default webcam doesn't work
+MODEL_PATH = "pose_landmarker_lite.task"   ← relative path (why chdir is needed)
+EXERCISE_KEYS = {ord("1"): "Squat", ord("2"): "Push-up", ...}  ← for CLI main.py
+
+--- pose_helpers.py ---
+calculate_angle(a, b, c): returns angle at b in degrees (0-180)
+  Uses numpy dot product: cos(angle) = (ba · bc) / (|ba| * |bc|)
+landmark_xy(landmarks, idx): returns (x, y) normalised coords
+landmark_visible(landmarks, idx): checks visibility > MIN_VISIBILITY (0.05)
+all_visible(landmarks, indices): checks all landmarks visible
+required_side_visible(landmarks, side, parts): checks left/right side landmarks
+get_side_points(landmarks, side): returns dict {shoulder, hip, knee, ankle, elbow, wrist}
+
+────────────────────────────────────────────────────────────────────────────────
+11. FRONTEND (frontend/src/)
+────────────────────────────────────────────────────────────────────────────────
+
+--- main.jsx ---
+Renders: <BrowserRouter><AuthProvider><App /></AuthProvider></BrowserRouter>
+
+--- App.jsx ---
+All routes. Protected routes wrapped with <ProtectedRoute>:
+  / → Landing
+  /login → Login
+  /register → Register
+  /dashboard → Dashboard (protected)
+  /goal-planner → GoalPlanner (protected)
+  /exercise-selection → ExerciseSelection (protected)
+  /live-workout → LiveWorkout (protected)
+  /workout-results → WorkoutResults (protected)
+  /workout-history → WorkoutHistory (protected)
+  /profile → Profile (protected)
+
+--- api/client.js ---
+BASE = "/api" (proxied by Vite to Django)
+  Note: Vite proxy config in vite.config.js proxies /api → http://127.0.0.1:8000
+
+Auto-refresh logic:
+  - On 401 response, calls /users/auth/refresh/ once
+  - If refresh succeeds, retries original request
+  - Uses a singleton _refreshing promise to prevent parallel refresh calls
+
+Exported functions:
+  Auth: register, login, logout, getMe, refreshToken
+  Profile: getProfile, patchProfile
+  Plan: generatePlan
+  Roadmaps: getRoadmaps, getRoadmap, getTodayWorkout
+  Sessions: startSession, getSessions, getSession, saveAIResult
+  Dashboard: getDashboard
+  Metrics: getBodyMetrics, addBodyMetric
+  Goals: getGoals
+
+--- context/AuthContext.jsx ---
+On mount: calls getMe() to restore session
+Provides: { user: {id, email, name} | null | undefined, setUser, logout }
+undefined = still loading (prevents flash of login redirect)
+
+--- components/ProtectedRoute.jsx ---
+If user === undefined: returns null (loading)
+If user === null: returns <Navigate to="/login" />
+Otherwise: renders children
+
+--- components/AuthLayout.jsx ---
+Shared Login+Register form. Accepts type="login"|"register" prop.
+On login: saves access_token to localStorage (for AI service Bearer use)
+On register: calls register API then auto-logs in
+
+--- components/DashboardLayout.jsx ---
+Renders <Sidebar /> on left + <main className="dash-main"> children on right
+
+--- components/Sidebar.jsx ---
+Nav links with Lucide icons: Dashboard, Goal Planner, History, Profile
+Shows user email at bottom. Logout button.
+
+--- pages/Dashboard.jsx ---
+Loads getDashboard() + getTodayWorkout() in parallel on mount.
+Shows:
+  - Stats row: Burned Today, Planned Today, Burned This Week, Workouts Done, Avg Posture
+  - Active Plan card: title, weeks, weight range, calorie targets
+  - Today's Workout card: day number, focus, exercises list with AI badges
+  - [▶ Start Workout] button → calls startSession(roadmap_day_id)
+    → navigates to /exercise-selection with {session_id, exercises[]}
+
+handleStartWorkout:
+  POST /api/fitness/workout-sessions/start/
+  Response includes session_id + ai_launch.exercise_options[]
+  navigate("/exercise-selection", { state: { session_id, exercises } })
+
+--- pages/ExerciseSelection.jsx ---
+Reads location.state.session_id and location.state.exercises
+Shows cards for each exercise with:
+  - Name + AI badge (if has_ai_detection)
+  - planned_sets × planned_reps or duration
+  - planned_calories
+  - [Start] button
+
+On Start: navigate("/live-workout", { state: { session_id, exercise details... } })
+
+--- pages/LiveWorkout.jsx ---
+Reads all exercise details from location.state
+States: idle → running → done | error
+
+On "Start Local AI Camera":
+  - Gets access_token from localStorage
+  - Builds callbackUrl = ${VITE_API_URL}/fitness/workout-sessions/${session_id}/ai-result/
+  - POSTs to ${VITE_AI_SERVICE_URL}/ai/start-workout
+  - Shows spinner while AI runs (this is a blocking request — waits for CV window to close)
+  - On success: navigate("/workout-results", { state: { result, session_id } })
+  - On error: shows error message + retry button
+
+--- pages/WorkoutResults.jsx ---
+Reads location.state.result (the full AI result JSON)
+Shows:
+  - Stat cards: calories burned, duration, form score
+  - Per-exercise breakdown: reps, correct/incorrect, calories, form score
+  - Posture event feedback messages
+  - "Do Another Exercise" + "Back to Dashboard" buttons
+
+--- pages/WorkoutHistory.jsx ---
+Loads getSessions() on mount
+Each session card: date, duration, calories, posture score, completed badge
+Expandable: shows exercise logs with sets×reps, calories, score, bad reps
+
+--- pages/GoalPlanner.jsx ---
+Form: goal_type, current_weight, target_weight, duration_weeks, age, gender, height, activity
+On submit: calls generatePlan() → shows success with roadmap summary
+
+--- pages/Profile.jsx ---
+Loads getProfile() + getBodyMetrics() on mount
+Can update: age, gender, height, activity_level
+Can log new body weight
+
+--- styles/global.css ---
+~1130 lines of CSS. Dark theme: background #050505, panels #111, accent teal #63cbb7
+Key classes:
+  .dashboard-content, .dash-header, .dash-stats, .dash-stat-card
+  .plan-card, .plan-card-title, .plan-card-meta, .plan-card-top
+  .exercise-list, .exercise-row, .exercise-name, .exercise-detail
+  .exercise-select-list, .exercise-select-card (new for ExerciseSelection)
+  .session-list, .session-card, .session-header, .session-logs
+  .log-row, .log-name, .log-detail
+  .start-btn (teal gradient button)
+  .ai-badge (small teal pill)
+  .badge.green, .badge.grey
+  .form-error (red error text)
+  .coming-soon (centered placeholder)
+  .generate-btn (large CTA button)
+
+--- frontend/.env ---
+VITE_API_URL=http://127.0.0.1:8000/api
+VITE_AI_SERVICE_URL=http://127.0.0.1:9001
+
+--- vite.config.js ---
+Has proxy: /api → http://127.0.0.1:8000
+This means in development, frontend calls /api/... and Vite proxies to Django.
+This avoids CORS issues for the Django API. The AI service (port 9001) is called
+directly with full URL because it's a different origin.
+
+────────────────────────────────────────────────────────────────────────────────
+12. KNOWN BUGS FIXED DURING DEVELOPMENT
+────────────────────────────────────────────────────────────────────────────────
+
+BUG 1: pose_landmarker_lite.task not found when running from project root
+  ROOT CAUSE: pose_landmarker.py uses relative MODEL_PATH = "pose_landmarker_lite.task"
+              When uvicorn runs from movemate_mvp0_ai_engine/, it can't find the file
+              in ai_model/ subdirectory.
+  FIX: In workout_runner.run_ai_workout(), do os.chdir(ai_model_dir) before
+       creating the landmarker, and os.chdir(orig_dir) after the with block ends.
+
+BUG 2: StartWorkoutSessionView not returning exercises
+  ROOT CAUSE: Original response only had session_id, missing ai_launch.exercise_options
+  FIX: Added query to get all RoadmapDayExercises and include in response
+
+BUG 3: Lunge slug mismatch
+  ROOT CAUSE: AI model uses "lunge" internally, but DB seeded with slug "lunges"
+  FIX: SLUG_TO_EXERCISE dict in workout_runner maps both "lunge" and "lunges" → "Lunge"
+       SUPPORTED_SLUGS in api_server includes both
+
+────────────────────────────────────────────────────────────────────────────────
+13. CURRENT DATA IN DATABASE (as of last test)
+────────────────────────────────────────────────────────────────────────────────
+
+WorkoutSessions: 3 (1 completed with 145.50 kcal, 900s duration)
+ExerciseLogs: 1
+AIModelRuns: 1
+DailyCalorieSummary: 1 (2026-06-07: planned=500, actual=145.50, completed=True)
+Exercises: 8 (squat, push_up, sit_up, plank, jumping_jack, burpee, mountain_climber, lunges)
+
+The full AI flow has been tested and confirmed working end-to-end.
+
+────────────────────────────────────────────────────────────────────────────────
+14. HOW TO RUN (quick reference)
+────────────────────────────────────────────────────────────────────────────────
+
+# First time setup:
+cd backend && source ../venv/bin/activate
+python manage.py migrate
+python manage.py seed_exercises
+
+# Terminal 1 — Django
+cd backend && source ../venv/bin/activate && python manage.py runserver
+
+# Terminal 2 — FastAPI AI service
+cd movemate_mvp0_ai_engine
+source venv/bin/activate
+uvicorn ai_model.api_server:app --host 127.0.0.1 --port 9001 --reload
+
+# Terminal 3 — React
+cd frontend && npm run dev
+
+# Browser: http://localhost:5173
+# Swagger: http://localhost:8000/api/docs/
+
+────────────────────────────────────────────────────────────────────────────────
+15. WHAT NEEDS TO BE BUILT NEXT (priority order)
+────────────────────────────────────────────────────────────────────────────────
+
+HIGH PRIORITY:
+  1. Sit-up detection in exercise_logic.py
+     - Detect hip flexion angle (shoulder→hip→knee)
+     - UP: angle > 120°, DOWN: angle < 60°, DOWN→UP = +1 rep
+     - Add "sit_up" to SLUG_TO_EXERCISE in workout_runner.py
+
+  2. Session handles multiple exercises (loop through all in exercise selection)
+     - Currently user picks one exercise at a time
+     - Should complete all exercises in one session before sending final result
+     - ExerciseLog already supports multiple per session
+
+  3. DailyCalorieSummary accumulation bug
+     - Currently SaveAIWorkoutResultView does:
+         "actual_calories_burned": session.total_calories_burned
+       This REPLACES the daily value instead of adding to it
+     - Fix: use F() expression or Sum to ADD to existing value
+
+  4. Access token storage
+     - Currently: access_token stored in localStorage in AuthLayout.jsx on login
+     - This is needed for AI service Bearer auth
+     - Should be documented clearly and considered for security review
+
+MEDIUM PRIORITY:
+  5. Rest timer between sets in webcam window
+     - After set complete screen, show 30-second countdown before starting next set
+     - Add countdown display in draw_set_complete_screen()
+
+  6. Progress charts on Dashboard
+     - Weekly calories burned bar chart (last 7 days)
+     - Use recharts library (npm install recharts)
+     - Data available from DailyCalorieSummary
+
+  7. All exercises in one session
+     - ExerciseSelection should let user complete ALL exercises
+     - After each exercise finishes, return to ExerciseSelection for next one
+     - Only POST final combined result when all exercises are done
+
+HIGH DEBT:
+  8. PostgreSQL for production
+     - Change DATABASE settings from SQLite to PostgreSQL
+     - Install psycopg2
+
+  9. Replace localStorage token with session-scoped memory or backend AI session token
+     - Security: access_token in localStorage vulnerable to XSS
+     - Better: Backend generates a short-lived AI session token just for the AI callback
+
+────────────────────────────────────────────────────────────────────────────────
+16. PROMPT FOR NEXT AI TO CONTINUE
+────────────────────────────────────────────────────────────────────────────────
+
+Paste this to give another AI full context:
+
+---
+
+You are continuing development on MoveMate AI, a fitness app with:
+- Django 6 backend (port 8000), DRF + SimpleJWT HttpOnly cookie auth
+- FastAPI AI service (port 9001) that opens an OpenCV webcam window
+- React 19 + Vite frontend (port 5173)
+
+CURRENT STATE: Fully working end-to-end. User can:
+  register → generate plan → see today's workout → start workout →
+  pick exercise → start AI camera → do squats (set by set with progress UI) →
+  results auto-saved to Django → results page → dashboard updates
+
+KEY TECHNICAL DETAILS:
+  - Backend auth: CookieJWTAuthentication reads "access_token" HttpOnly cookie
+    OR Authorization: Bearer header. Both work.
+  - Frontend stores access_token in localStorage on login for AI service Bearer use
+  - AI service (workout_runner.py) must os.chdir(ai_model_dir) before loading
+    the MediaPipe model because MODEL_PATH is a relative path
+  - Exercise slug "lunges" (not "lunge") is in the DB. workout_runner maps both.
+  - The SaveAIWorkoutResultView finds Exercise by slug, returns 400 if not found.
+    Currently seeded slugs: squat, push_up, sit_up, plank, jumping_jack,
+    burpee, mountain_climber, lunges
+
+KEY FILES TO KNOW:
+  ai_model/workout_runner.py     - run_ai_workout(): set/rep loop + chdir fix
+  ai_model/drawing.py            - draw_info_panel(), draw_set_complete_screen(),
+                                   draw_all_sets_done_screen()
+  ai_model/exercise_logic.py     - analyze_squat/pushup/jumping_jack/plank/lunge()
+  ai_model/api_server.py         - FastAPI POST /ai/start-workout
+  backend/fitness/models.py      - All 10 DB models
+  backend/fitness/views.py       - SaveAIWorkoutResultView (saves full AI result)
+  backend/fitness/serializers.py - AIWorkoutResultSerializer (nested input)
+  frontend/src/api/client.js     - All fetch wrappers with auto token refresh
+  frontend/src/pages/Dashboard.jsx         - Start Workout button flow
+  frontend/src/pages/ExerciseSelection.jsx - Pick exercise
+  frontend/src/pages/LiveWorkout.jsx       - Calls FastAPI AI service
+  frontend/src/pages/WorkoutResults.jsx   - Shows AI result
+
+KNOWN BUG TO FIX:
+  DailyCalorieSummary is overwritten (not accumulated) when multiple workouts
+  done in a day. In SaveAIWorkoutResultView, change:
+    "actual_calories_burned": session.total_calories_burned
+  to use F("actual_calories_burned") + session.total_calories_burned
+
+YOUR TASK: [describe what you want built here]
+
+---
+================================================================================
+END OF HANDOFF DOCUMENT
+================================================================================
