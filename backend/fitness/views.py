@@ -122,6 +122,13 @@ class GeneratePlanView(APIView):
         today = date.today()
         target_date = today + timedelta(weeks=data["duration_weeks"])
 
+        # Guard: ensure exercises are seeded before generating a plan
+        if not Exercise.objects.exists():
+            from fitness.management.commands.seed_exercises import EXERCISES
+            for ex_data in EXERCISES:
+                slug = ex_data["slug"]
+                Exercise.objects.update_or_create(slug=slug, defaults=ex_data)
+
         # Update or create UserProfile
         profile, _ = UserProfile.objects.get_or_create(user=request.user)
         profile.current_weight_kg = data["current_weight_kg"]

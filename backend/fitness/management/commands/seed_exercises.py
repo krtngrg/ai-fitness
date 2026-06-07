@@ -27,7 +27,7 @@ EXERCISES = [
         "difficulty": "beginner",
         "estimated_calories_per_rep": "0.250",
         "estimated_calories_per_minute": "5.00",
-        "has_ai_detection": False,
+        "has_ai_detection": True,   # now has browser AI detection
     },
     {
         "name": "Plank",
@@ -36,7 +36,7 @@ EXERCISES = [
         "difficulty": "beginner",
         "estimated_calories_per_rep": "0.000",
         "estimated_calories_per_minute": "4.00",
-        "has_ai_detection": False,
+        "has_ai_detection": True,
     },
     {
         "name": "Jumping Jack",
@@ -45,7 +45,7 @@ EXERCISES = [
         "difficulty": "beginner",
         "estimated_calories_per_rep": "0.200",
         "estimated_calories_per_minute": "8.00",
-        "has_ai_detection": False,
+        "has_ai_detection": True,
     },
     {
         "name": "Burpee",
@@ -54,7 +54,7 @@ EXERCISES = [
         "difficulty": "intermediate",
         "estimated_calories_per_rep": "0.500",
         "estimated_calories_per_minute": "10.00",
-        "has_ai_detection": False,
+        "has_ai_detection": True,   # now has browser AI detection
     },
     {
         "name": "Mountain Climber",
@@ -63,7 +63,7 @@ EXERCISES = [
         "difficulty": "beginner",
         "estimated_calories_per_rep": "0.180",
         "estimated_calories_per_minute": "8.00",
-        "has_ai_detection": False,
+        "has_ai_detection": True,   # now has browser AI detection
     },
     {
         "name": "Lunges",
@@ -72,13 +72,13 @@ EXERCISES = [
         "difficulty": "beginner",
         "estimated_calories_per_rep": "0.300",
         "estimated_calories_per_minute": "5.50",
-        "has_ai_detection": False,
+        "has_ai_detection": True,
     },
 ]
 
 
 class Command(BaseCommand):
-    help = "Seeds the Exercise catalogue with the 8 canonical exercises."
+    help = "Seeds the Exercise catalogue with all canonical exercises."
 
     def handle(self, *args, **options):
         created_count = 0

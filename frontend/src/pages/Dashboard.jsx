@@ -140,14 +140,26 @@ export default function Dashboard() {
         <div className="dash-section">
           <h2>Active Plan</h2>
           <div className="plan-card">
-            <div className="plan-card-title">{dash.active_roadmap.title}</div>
-            <div className="plan-card-meta">
-              {dash.active_roadmap.total_weeks} weeks ·{" "}
-              {dash.current_weight_kg} kg → {dash.target_weight_kg} kg
-            </div>
-            <div className="plan-card-meta">
-              Daily target: {dash.active_roadmap.daily_calorie_burn_target} kcal ·{" "}
-              Weekly target: {dash.active_roadmap.weekly_calorie_burn_target} kcal
+            <div className="plan-card-top">
+              <div>
+                <div className="plan-card-title">{dash.active_roadmap.title}</div>
+                <div className="plan-card-meta">
+                  {dash.active_roadmap.total_weeks} weeks ·{" "}
+                  {dash.current_weight_kg} kg → {dash.target_weight_kg} kg
+                </div>
+                <div className="plan-card-meta">
+                  Daily target: {dash.active_roadmap.daily_calorie_burn_target} kcal ·{" "}
+                  Weekly target: {dash.active_roadmap.weekly_calorie_burn_target} kcal
+                </div>
+              </div>
+              <button
+                className="btn ghost"
+                style={{ whiteSpace: "nowrap" }}
+                onClick={() => navigate(`/roadmap/${dash.active_roadmap.id}`)}
+              >
+                <Calendar size={14} style={{ marginRight: 5 }} />
+                Full Plan
+              </button>
             </div>
           </div>
         </div>

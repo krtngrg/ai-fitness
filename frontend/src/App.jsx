@@ -10,6 +10,7 @@ import Profile from "./pages/Profile.jsx";
 import ExerciseSelection from "./pages/ExerciseSelection.jsx";
 import LiveWorkout from "./pages/LiveWorkout.jsx";
 import WorkoutResults from "./pages/WorkoutResults.jsx";
+import RoadmapDetail from "./pages/RoadmapDetail.jsx";
 import ProtectedRoute from "./components/ProtectedRoute.jsx";
 
 export default function App() {
@@ -26,6 +27,8 @@ export default function App() {
       <Route path="/exercise-selection" element={<ProtectedRoute><ExerciseSelection /></ProtectedRoute>} />
       <Route path="/live-workout" element={<ProtectedRoute><LiveWorkout /></ProtectedRoute>} />
       <Route path="/workout-results" element={<ProtectedRoute><WorkoutResults /></ProtectedRoute>} />
+      <Route path="/roadmap" element={<ProtectedRoute><RoadmapDetail /></ProtectedRoute>} />
+      <Route path="/roadmap/:id" element={<ProtectedRoute><RoadmapDetail /></ProtectedRoute>} />
     </Routes>
   );
 }

@@ -837,3 +837,115 @@ YOUR TASK: [describe what you want built here]
 ================================================================================
 END OF HANDOFF DOCUMENT
 ================================================================================
+
+================================================================================
+  UPDATE LOG — Webcam Black Screen Fix
+  Date: June 7, 2026
+  Files Modified: 2
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+BUG FIX: "Video element not mounted" + Black Screen on webcam workout
+────────────────────────────────────────────────────────────────────────────────
+
+SYMPTOM 1: Error — "Video element not mounted."
+  User clicked "Start AI Webcam Workout" and immediately got this error.
+
+SYMPTOM 2: Black screen even after error was "fixed"
+  Even after adding a hidden <video> to loading/error phases, the canvas showed
+  a black screen with no webcam feed.
+
+ROOT CAUSE (two compounding issues):
+
+  ISSUE A — Video unmounted when phase changes (original bug):
+    LiveWorkout.jsx used conditional early returns (if phase==='loading' return ...)
+    Each return rendered a completely different component tree.
+    The <video ref={pose.videoRef}> only existed in the "active" phase render.
+    When pose.start() ran during the "loading" phase, videoRef.current was null.
+    → Threw "Video element not mounted."
+
+  ISSUE B — srcObject lost on remount (black screen bug):
+    Previous fix added a tiny <video> to the loading phase, but when the phase
+    changed from "loading" → "active", React UNMOUNTED the loading-phase <video>
+    and MOUNTED a new <video> in the active-phase render.
+    React refs only point to the currently mounted element.
+    The srcObject (camera stream) was attached to the OLD video element.
+    The new video element had no srcObject → canvas drew from a blank video → black screen.
+    This is a fundamental React behaviour: each conditional return creates an
+    independent component tree, so elements don't persist across them.
+
+FIX APPLIED:
+
+  FILE 1: frontend/src/pages/LiveWorkout.jsx  (complete rewrite of render logic)
+
+    OLD PATTERN (broken):
+      if (phase === 'idle')    return <DashboardLayout><IdleUI /></DashboardLayout>
+      if (phase === 'loading') return <DashboardLayout><video tiny /><LoadingUI /></DashboardLayout>
+      if (phase === 'active')  return <DashboardLayout><video ref={videoRef} /><canvas /></DashboardLayout>
+      → Each return is an independent tree. Video element remounts every transition.
+
+    NEW PATTERN (fixed):
+      return (
+        <DashboardLayout>
+          {isIdle    && <IdleUI />}      ← with a tiny hidden <video ref={videoRef} />
+          {isError   && <ErrorUI />}     ← with a tiny hidden <video ref={videoRef} />
+          {isSaving  && <SavingUI />}
+          {showCanvas && (
+            <WorkoutSection>
+              <video ref={videoRef} style={{opacity:0, position:absolute, 1x1px}} />
+              <canvas ref={canvasRef} />
+              {isLoading && <LoadingOverlay />}   ← overlay ON TOP of canvas
+            </WorkoutSection>
+          )}
+        </DashboardLayout>
+      )
+      → Single return. All phases share the same DOM tree.
+      → <video> element stays mounted; srcObject persists across all phase changes.
+      → Loading spinner is shown as a canvas overlay, NOT a separate component tree.
+      → showCanvas = isLoading || isActive (true once start() is called, never goes false)
+
+    ADDITIONAL DETAIL — idle & error phases also carry a hidden video:
+      The idle and error phases each render a 1×1px invisible <video ref={pose.videoRef}>.
+      This ensures videoRef is never null from the moment the component mounts.
+      When phase transitions idle→loading, the same <video> DOM node is reused
+      because React reconciles the same ref prop on the same element in the same tree.
+
+  FILE 2: frontend/src/hooks/useWebcamPose.js  (minor timing fix)
+
+    CHANGE: Added `await new Promise(res => setTimeout(res, 0))` in start()
+      after setPhase("loading"), before calling openCamera().
+
+    WHY: setPhase("loading") triggers a React state update. React batches state
+      updates and commits them asynchronously. The setTimeout(0) yields control
+      back to the event loop, allowing React to commit the render (which adds the
+      <video> to the DOM) before openCamera() tries to use videoRef.current.
+
+    CHANGE: Removed the 100ms retry fallback for videoRef.current in openCamera().
+      This was a band-aid fix that is no longer needed with the proper DOM structure.
+
+RESULT:
+  - No more "Video element not mounted" error
+  - Webcam feed renders correctly on the canvas with pose skeleton overlay
+  - Loading spinner shows as overlay while model loads, then disappears cleanly
+  - All phase transitions (idle → loading → active → set_done → all_done) work
+    without any video element remounting
+
+────────────────────────────────────────────────────────────────────────────────
+FILES CHANGED SUMMARY
+────────────────────────────────────────────────────────────────────────────────
+
+  frontend/src/pages/LiveWorkout.jsx
+    - Complete rewrite of render structure
+    - Single return statement instead of multiple early returns
+    - <video> always in DOM; loading/error screens use invisible 1×1 video
+    - Loading spinner moved to canvas overlay (position:absolute inside canvas wrap)
+    - Error screen retains hidden <video> so Retry works without remount
+
+  frontend/src/hooks/useWebcamPose.js
+    - start(): added await setTimeout(0) after setPhase("loading")
+    - openCamera(): removed 100ms retry fallback (no longer needed)
+    - All other logic unchanged
+
+================================================================================
+END OF UPDATE LOG
+================================================================================

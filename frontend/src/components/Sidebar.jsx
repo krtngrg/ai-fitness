@@ -1,6 +1,6 @@
 import { NavLink } from "react-router-dom";
 import {
-  LayoutDashboard, ClipboardList, History, User, Activity,
+  LayoutDashboard, ClipboardList, History, User, Activity, Map,
 } from "lucide-react";
 
 export default function Sidebar() {
@@ -29,6 +29,14 @@ export default function Sidebar() {
         >
           <ClipboardList size={18} />
           <span>Goal Planner</span>
+        </NavLink>
+
+        <NavLink
+          to="/roadmap"
+          className={({ isActive }) => "sidebar-link" + (isActive ? " active" : "")}
+        >
+          <Map size={18} />
+          <span>Full Roadmap</span>
         </NavLink>
 
         <NavLink

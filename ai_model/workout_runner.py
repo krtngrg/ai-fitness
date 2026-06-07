@@ -72,15 +72,20 @@ FULLSCREEN_CAMERA = True
 
 
 SLUG_TO_EXERCISE = {
-    "squat": "Squat",
-    "push_up": "Push-up",
-    "pushup": "Push-up",
-    "push-up": "Push-up",
-    "jumping_jack": "Jumping Jack",
-    "jumping-jack": "Jumping Jack",
-    "plank": "Plank",
-    "lunge": "Lunge",
-    "lunges": "Lunge",
+    "squat":            "Squat",
+    "push_up":          "Push-up",
+    "pushup":           "Push-up",
+    "push-up":          "Push-up",
+    "sit_up":           "Sit-up",
+    "situp":            "Sit-up",
+    "jumping_jack":     "Jumping Jack",
+    "jumping-jack":     "Jumping Jack",
+    "plank":            "Plank",
+    "lunge":            "Lunge",
+    "lunges":           "Lunge",
+    "burpee":           "Burpee",
+    "burpees":          "Burpee",
+    "mountain_climber": "Mountain Climber",
 }
 
 

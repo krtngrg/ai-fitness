@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>MoveMate — Webcam + MediaPipe Test</title>
+  <style>
+    body { margin: 0; background: #050505; color: #eee; font-family: Inter, Arial, sans-serif; display: flex; flex-direction: column; align-items: center; padding: 24px; gap: 16px; }
+    h2   { margin: 0; color: #63cab7; }
+    #log { background: #111; border: 1px solid #333; border-radius: 10px; padding: 14px; width: 100%; max-width: 700px; font-size: 13px; line-height: 1.7; white-space: pre-wrap; min-height: 80px; }
+    .ok  { color: #50dc6e; }
+    .err { color: #f87171; }
+    .inf { color: #63cab7; }
+    #wrap { position: relative; width: 640px; height: 360px; background: #000; border-radius: 12px; overflow: hidden; }
+    video, canvas { position: absolute; top:0; left:0; width:100%; height:100%; }
+    canvas { z-index: 2; }
+    button { background: #63cab7; color: #050505; border: none; border-radius: 8px; padding: 10px 24px; font-size: 14px; font-weight: 700; cursor: pointer; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    #status { font-size: 14px; color: #aaa; }
+  </style>
+</head>
+<body>
+  <h2>MoveMate — Webcam + MediaPipe Pose Test</h2>
+  <div id="log">Click "Run Test" to begin…</div>
+
+  <div id="wrap">
+    <video id="vid" muted playsinline autoplay></video>
+    <canvas id="cv"></canvas>
+  </div>
+
+  <p id="status">Idle</p>
+  <button id="btn">▶ Run Test</button>
+
+  <script type="module">
+    const log   = document.getElementById("log");
+    const btn   = document.getElementById("btn");
+    const status= document.getElementById("status");
+    const vid   = document.getElementById("vid");
+    const cv    = document.getElementById("cv");
+    const ctx   = cv.getContext("2d");
+
+    function write(msg, cls = "") {
+      const line = document.createElement("span");
+      if (cls) line.className = cls;
+      line.textContent = msg + "\n";
+      log.appendChild(line);
+      log.scrollTop = log.scrollHeight;
+    }
+
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      log.textContent = "";
+      status.textContent = "Running…";
+
+      // ── 1. SharedArrayBuffer check ────────────────────────────────────────
+      write("1. SharedArrayBuffer available? ", "inf");
+      if (typeof SharedArrayBuffer === "undefined") {
+        write("   ✗ MISSING — COOP/COEP headers not set. MediaPipe GPU will not work.", "err");
+        write("   → Make sure Vite is running with the updated vite.config.js and you refreshed.", "err");
+      } else {
+        write("   ✓ SharedArrayBuffer OK", "ok");
+      }
+
+      // ── 2. Camera permission ──────────────────────────────────────────────
+      write("\n2. Requesting camera…", "inf");
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 640 }, height: { ideal: 360 }, facingMode: "user" },
+          audio: false,
+        });
+        write("   ✓ Camera opened", "ok");
+        const track = stream.getVideoTracks()[0];
+        const s = track.getSettings();
+        write(`   → ${s.width}×${s.height} @ ${s.frameRate?.toFixed(0) ?? "?"}fps  label="${track.label}"`, "ok");
+      } catch (e) {
+        write("   ✗ " + e.message, "err");
+        btn.disabled = false;
+        status.textContent = "FAILED at camera step.";
+        return;
+      }
+
+      vid.srcObject = stream;
+      await new Promise(r => { vid.onloadedmetadata = r; });
+      await vid.play();
+      cv.width  = vid.videoWidth  || 640;
+      cv.height = vid.videoHeight || 360;
+      write(`   → Video playing: ${vid.videoWidth}×${vid.videoHeight}`, "ok");
+
+      // ── 3. Load MediaPipe ─────────────────────────────────────────────────
+      write("\n3. Loading MediaPipe Tasks Vision…", "inf");
+      let PoseLandmarker, FilesetResolver;
+      try {
+        const mp = await import("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/+esm");
+        PoseLandmarker  = mp.PoseLandmarker;
+        FilesetResolver = mp.FilesetResolver;
+        write("   ✓ Module imported", "ok");
+      } catch (e) {
+        write("   ✗ Import failed: " + e.message, "err");
+        btn.disabled = false;
+        status.textContent = "FAILED at MediaPipe import.";
+        return;
+      }
+
+      write("   Resolving WASM files…", "inf");
+      const vision = await FilesetResolver.forVisionTasks(
+        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/wasm"
+      );
+      write("   ✓ WASM resolved", "ok");
+
+      write("   Creating PoseLandmarker (GPU → CPU fallback)…", "inf");
+      let lm;
+      const opts = (delegate) => ({
+        baseOptions: {
+          modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task",
+          delegate,
+        },
+        runningMode: "VIDEO",
+        numPoses: 1,
+        minPoseDetectionConfidence: 0.5,
+        minPosePresenceConfidence: 0.5,
+        minTrackingConfidence: 0.5,
+      });
+
+      try {
+        lm = await PoseLandmarker.createFromOptions(vision, opts("GPU"));
+        write("   ✓ PoseLandmarker created (GPU)", "ok");
+      } catch (e) {
+        write("   ⚠ GPU failed (" + e.message + "), trying CPU…", "err");
+        try {
+          lm = await PoseLandmarker.createFromOptions(vision, opts("CPU"));
+          write("   ✓ PoseLandmarker created (CPU)", "ok");
+        } catch (e2) {
+          write("   ✗ CPU also failed: " + e2.message, "err");
+          btn.disabled = false;
+          status.textContent = "FAILED at PoseLandmarker creation.";
+          return;
+        }
+      }
+
+      // ── 4. Live detection loop ─────────────────────────────────────────────
+      write("\n4. Running live pose detection (30 frames)…", "inf");
+      let frameCount = 0, detectedCount = 0;
+      let lastTs = -1;
+
+      function frame() {
+        if (frameCount >= 30) {
+          write(`\n5. Results: ${detectedCount}/30 frames had pose landmarks`, detectedCount > 0 ? "ok" : "err");
+          if (detectedCount === 0) {
+            write("   → Make sure you are visible in the frame and the room is lit.", "err");
+          } else {
+            write("   ✓ All systems working — React webcam workout is ready.", "ok");
+          }
+          stream.getTracks().forEach(t => t.stop());
+          btn.disabled = false;
+          status.textContent = "Test complete.";
+          return;
+        }
+
+        ctx.save();
+        ctx.scale(-1, 1);
+        ctx.drawImage(vid, -cv.width, 0, cv.width, cv.height);
+        ctx.restore();
+
+        const ts = Math.max(performance.now(), lastTs + 1);
+        lastTs = ts;
+        const result = lm.detectForVideo(vid, ts);
+
+        if (result.landmarks?.length > 0) {
+          detectedCount++;
+          const lms = result.landmarks[0];
+          ctx.strokeStyle = "#50dc6e";
+          ctx.lineWidth = 2;
+          const CONNS = [[11,12],[11,13],[13,15],[12,14],[14,16],[11,23],[12,24],[23,24],[23,25],[25,27],[24,26],[26,28]];
+          for (const [a, b] of CONNS) {
+            if (!lms[a] || !lms[b]) continue;
+            ctx.beginPath();
+            ctx.moveTo(lms[a].x * cv.width, lms[a].y * cv.height);
+            ctx.lineTo(lms[b].x * cv.width, lms[b].y * cv.height);
+            ctx.stroke();
+          }
+        }
+
+        ctx.fillStyle = "#63cab7";
+        ctx.font = "bold 14px Arial";
+        ctx.fillText(`Frame ${frameCount + 1}/30  Detected: ${detectedCount}`, 10, 24);
+
+        frameCount++;
+        status.textContent = `Detecting… frame ${frameCount}/30`;
+        requestAnimationFrame(frame);
+      }
+
+      requestAnimationFrame(frame);
+    });
+  </script>
+</body>
+</html>

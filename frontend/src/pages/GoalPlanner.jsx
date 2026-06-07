@@ -65,7 +65,7 @@ export default function GoalPlanner() {
         <section className="goal-page">
           <div className="goal-header">
             <h1>Plan Generated ✓</h1>
-            <p>Your personalised roadmap is ready. Head to the dashboard to see today's workout.</p>
+            <p>Your personalised roadmap is ready. View the full week-by-week plan or head to the dashboard.</p>
           </div>
 
           <div className="goal-card plan-result">
@@ -102,8 +102,11 @@ export default function GoalPlanner() {
             <p className="plan-summary">{r.ai_summary}</p>
 
             <div className="plan-actions">
-              <button className="generate-btn" onClick={() => navigate("/dashboard")}>
-                Go to Dashboard <CheckCircle size={18} />
+              <button className="generate-btn" onClick={() => navigate(`/roadmap/${r.id}`)}>
+                View Full Plan (Week by Week) <CheckCircle size={18} />
+              </button>
+              <button className="generate-btn outline" onClick={() => navigate("/dashboard")}>
+                Go to Dashboard
               </button>
               <button className="generate-btn outline" onClick={() => setResult(null)}>
                 Make a new plan

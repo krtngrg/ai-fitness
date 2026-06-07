@@ -1129,3 +1129,461 @@ input::placeholder {
   align-items: center;
   gap: 6px;
 }
+
+/* ── ROADMAP DETAIL (week-by-week plan view) ─────────────────────────────── */
+
+.roadmap-summary-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 20px;
+  background: #111;
+  border: 1px solid #222;
+  border-radius: 12px;
+  padding: 14px 20px;
+  margin-bottom: 28px;
+  font-size: 13px;
+  color: #aaa;
+}
+
+.roadmap-summary-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.roadmap-warning {
+  color: #f5a623;
+  font-size: 12px;
+  flex-basis: 100%;
+}
+
+/* Week accordion block */
+.roadmap-week-block {
+  margin-bottom: 16px;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid #252525;
+}
+
+.roadmap-week-header {
+  width: 100%;
+  background: #111;
+  border: none;
+  cursor: pointer;
+  padding: 16px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: white;
+  transition: background 0.15s;
+}
+
+.roadmap-week-header:hover {
+  background: #1a1a1a;
+}
+
+.roadmap-week-header.roadmap-week-current {
+  background: #00bfa508;
+  border-bottom: 1px solid #00bfa522;
+}
+
+.roadmap-week-header-left {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.roadmap-week-num {
+  font-weight: 800;
+  font-size: 15px;
+}
+
+.roadmap-current-badge {
+  background: #00bfa522;
+  color: #00bfa5;
+  border: 1px solid #00bfa544;
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.roadmap-week-progress {
+  font-size: 12px;
+  color: #666;
+}
+
+.roadmap-toggle-icon {
+  font-size: 11px;
+  color: #555;
+}
+
+/* Days grid — 7 columns on wide screens */
+.roadmap-days-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 0;
+  background: #0d0d0d;
+  padding: 16px;
+  gap: 10px;
+}
+
+/* Day card */
+.roadmap-day-card {
+  background: #131313;
+  border: 1px solid #222;
+  border-radius: 10px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.roadmap-day-card.roadmap-day-today {
+  border-color: #00bfa5;
+  box-shadow: 0 0 0 1px #00bfa522;
+}
+
+.roadmap-day-card.roadmap-day-done {
+  opacity: 0.65;
+}
+
+.roadmap-day-card.roadmap-day-rest {
+  background: #0e0e0e;
+  border-color: #1a1a1a;
+}
+
+.roadmap-day-header {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.roadmap-day-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.roadmap-day-name {
+  font-weight: 800;
+  font-size: 13px;
+}
+
+.roadmap-day-date {
+  font-size: 10px;
+  color: #666;
+}
+
+.roadmap-day-badges {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.roadmap-today-pill {
+  background: #00bfa5;
+  color: #000;
+  border-radius: 999px;
+  padding: 1px 7px;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+}
+
+.roadmap-rest-body {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #444;
+  font-size: 11px;
+  margin-top: 4px;
+}
+
+.roadmap-day-calories {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: #00bfa5;
+  font-weight: 600;
+}
+
+.roadmap-exercise-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.roadmap-exercise-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.roadmap-exercise-name {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: #ccc;
+  font-weight: 500;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.roadmap-exercise-detail {
+  font-size: 10px;
+  color: #666;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* Responsive: collapse to 2 columns on tablet, 1 column on mobile */
+@media (max-width: 1100px) {
+  .roadmap-days-grid {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}
+
+@media (max-width: 700px) {
+  .roadmap-days-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 420px) {
+  .roadmap-days-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ── LIVE WORKOUT (in-browser webcam AI) ─────────────────────────────────── */
+
+.live-workout-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  height: 100%;
+}
+
+/* Idle / start card */
+.live-workout-idle-card {
+  background: #111;
+  border: 1px solid #252525;
+  border-radius: 16px;
+  padding: 36px 32px;
+  max-width: 540px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  text-align: center;
+}
+
+.live-workout-idle-card h2 {
+  margin: 0;
+  font-size: 22px;
+}
+
+.live-workout-idle-card p {
+  color: #aaa;
+  font-size: 14px;
+  margin: 0;
+  line-height: 1.6;
+}
+
+.live-workout-icon-ring {
+  width: 84px;
+  height: 84px;
+  border-radius: 50%;
+  background: #00bfa511;
+  border: 2px solid #00bfa533;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.live-workout-tips {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  width: 100%;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.live-workout-tips li {
+  color: #bbb;
+  font-size: 13px;
+  padding: 8px 14px;
+  background: #161616;
+  border-radius: 8px;
+}
+
+/* Loading spinner */
+.live-workout-spinner {
+  animation: spin 1s linear infinite;
+}
+
+/* Top bar during active workout */
+.live-workout-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 0 12px;
+  border-bottom: 1px solid #1e1e1e;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.live-workout-title {
+  font-weight: 800;
+  font-size: 18px;
+  margin-right: 12px;
+}
+
+.live-workout-subtitle {
+  font-size: 13px;
+  color: #888;
+}
+
+/* Canvas container */
+.live-workout-canvas-wrap {
+  position: relative;
+  width: 100%;
+  background: #000;
+  border-radius: 14px;
+  overflow: hidden;
+  /* 16:9 aspect ratio */
+  aspect-ratio: 16 / 9;
+  max-height: calc(100vh - 280px);
+}
+
+.live-workout-canvas-wrap:fullscreen {
+  max-height: 100vh;
+  border-radius: 0;
+}
+
+.live-workout-video-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.live-workout-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+}
+
+/* Stats bar below canvas */
+.live-workout-stats-bar {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  background: #111;
+  border: 1px solid #1e1e1e;
+  border-radius: 12px;
+  margin-top: 12px;
+  padding: 12px 0;
+  overflow: hidden;
+}
+
+.lw-stat {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 6px 12px;
+  border-right: 1px solid #1e1e1e;
+  min-width: 0;
+}
+
+.lw-stat:last-child {
+  border-right: none;
+}
+
+.lw-stat-val {
+  font-size: 22px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.lw-stat-label {
+  font-size: 11px;
+  color: #666;
+  margin-top: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.lw-feedback {
+  flex: 3;
+  align-items: flex-start;
+  padding-left: 20px;
+}
+
+.lw-feedback-text {
+  font-size: 13px;
+  color: #f0d040;
+  font-weight: 600;
+  margin-top: 2px;
+  line-height: 1.4;
+}
+
+@media (max-width: 700px) {
+  .live-workout-canvas-wrap {
+    max-height: 50vh;
+  }
+  .live-workout-stats-bar {
+    flex-wrap: wrap;
+  }
+  .lw-stat {
+    min-width: 80px;
+  }
+  .lw-feedback {
+    flex-basis: 100%;
+    border-right: none;
+    border-top: 1px solid #1e1e1e;
+  }
+}
+
+/* ── EXERCISE SELECTION — camera tip & AI card highlight ─────────────────── */
+
+.exercise-select-tip {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  background: #00bfa509;
+  border: 1px solid #00bfa522;
+  border-radius: 10px;
+  padding: 12px 16px;
+  font-size: 13px;
+  color: #aaa;
+  margin-bottom: 16px;
+  max-width: 680px;
+  line-height: 1.5;
+}
+
+.exercise-select-card-ai {
+  border-color: #00bfa533 !important;
+}
+
+.exercise-select-card-ai:hover {
+  border-color: #00bfa566 !important;
+  background: #00bfa506 !important;
+}
